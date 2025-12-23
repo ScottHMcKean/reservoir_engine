@@ -1,0 +1,78 @@
+[project]
+name = "reservoir-engine"
+version = "0.1.0"
+description = "Modular reservoir engineering framework for Databricks"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Reservoir Engine Team" }]
+
+# Production dependencies - minimal for Databricks deployment
+dependencies = [
+    "pydantic>=2.0",
+    "numpy>=1.24",
+    "scipy>=1.11",
+    "pandas>=2.0",
+]
+
+[project.optional-dependencies]
+# Development dependencies
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "ruff>=0.1",
+    "mypy>=1.5",
+    "pre-commit>=3.4",
+    "databricks-connect>=13.3",
+    "ipykernel>=6.25",
+]
+
+# Visualization (for notebooks and apps)
+viz = [
+    "matplotlib>=3.7",
+    "plotly>=5.17",
+]
+
+# ML dependencies (for uplift module)
+ml = [
+    "scikit-learn>=1.3",
+    "xgboost>=2.0",
+]
+
+# Spatial dependencies (for type curves and mapping)
+spatial = [
+    "geopandas>=0.14",
+    "shapely>=2.0",
+]
+
+# All optional dependencies
+all = [
+    "reservoir-engine[dev,viz,ml,spatial]",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/reservoir_engine"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+ignore_missing_imports = true
+
