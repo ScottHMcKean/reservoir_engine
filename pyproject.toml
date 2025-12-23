@@ -41,13 +41,19 @@ ml = [
 
 # Spatial dependencies (for type curves and mapping)
 spatial = [
-    "geopandas>=0.14",
-    "shapely>=2.0",
+    "h3>=3.7",
+]
+
+# App dependencies (Streamlit)
+app = [
+    "streamlit>=1.28",
+    "plotly>=5.17",
+    "pyyaml>=6.0",
 ]
 
 # All optional dependencies
 all = [
-    "reservoir-engine[dev,viz,ml,spatial]",
+    "reservoir-engine[dev,viz,ml,spatial,app]",
 ]
 
 [build-system]

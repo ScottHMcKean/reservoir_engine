@@ -16,8 +16,8 @@ class TestArpsParams:
     """Tests for ArpsParams dataclass."""
 
     def test_valid_params(self):
-        params = ArpsParams(qi=1000, di=0.1, b=0.8)
-        assert params.qi == 1000
+        params = ArpsParams(qi=100.0, di=0.1, b=0.8)
+        assert params.qi == 100.0
         assert params.di == 0.1
         assert params.b == 0.8
 
@@ -27,10 +27,10 @@ class TestArpsParams:
 
     def test_invalid_b_raises(self):
         with pytest.raises(ValueError, match="b must be between"):
-            ArpsParams(qi=1000, di=0.1, b=3.0)
+            ArpsParams(qi=100.0, di=0.1, b=3.0)
 
     def test_t_switch_calculation(self):
-        params = ArpsParams(qi=1000, di=0.12, b=0.8, d_min=0.05)
+        params = ArpsParams(qi=100.0, di=0.12, b=0.8, d_min=0.05)
         # t_switch should be finite for b > 0
         assert params.t_switch > 0
         assert params.t_switch < float("inf")
@@ -52,9 +52,9 @@ class TestArpsRate:
         assert rate_24 < rate_12
 
     def test_exponential_decline(self):
-        params = ArpsParams(qi=1000, di=0.1, b=0)
+        params = ArpsParams(qi=100.0, di=0.1, b=0)
         rate = arps_rate(10, params)
-        expected = 1000 * np.exp(-0.1 * 10)
+        expected = 100.0 * np.exp(-0.1 * 10)
         assert rate == pytest.approx(expected, rel=0.01)
 
     def test_array_input(self, arps_params):
@@ -98,4 +98,3 @@ class TestButlerRate:
         rate_peak = butler_rate(butler_params.tau, butler_params)
         rate_later = butler_rate(butler_params.tau + 12, butler_params)
         assert rate_later < rate_peak
-

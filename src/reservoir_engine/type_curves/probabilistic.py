@@ -2,6 +2,8 @@
 
 Generate P10/P50/P90 type curves and perform Monte Carlo sampling
 for uncertainty quantification.
+
+Uses IHS column naming conventions.
 """
 
 from typing import Literal
@@ -17,8 +19,8 @@ from reservoir_engine.dca.models import ArpsParams
 def generate_type_curve(
     df: pd.DataFrame,
     wells: list[str] | None = None,
-    percentiles: list[int] = [10, 50, 90],
-    rate_column: str = "oil_bbl",
+    percentiles: list[int] | None = None,
+    rate_column: str = "oil",
     month_column: str = "month",
     uwi_column: str = "uwi",
     min_wells_per_month: int = 3,
@@ -39,15 +41,15 @@ def generate_type_curve(
 
     Example:
         >>> type_curve = generate_type_curve(aligned_df, percentiles=[10, 50, 90])
-        >>> # Plot P10/P50/P90
-        >>> plt.plot(type_curve["month"], type_curve["p50"], label="P50")
     """
+    if percentiles is None:
+        percentiles = [10, 50, 90]
+
     result_df = df.copy()
 
     if wells is not None:
         result_df = result_df[result_df[uwi_column].isin(wells)]
 
-    # Group by month and calculate percentiles
     monthly_data = []
 
     for month in sorted(result_df[month_column].unique()):
@@ -96,12 +98,12 @@ def fit_type_curve(
 
     # Prepare data for fitting
     fit_df = type_curve_df[[month_column, rate_col]].copy()
-    fit_df = fit_df.rename(columns={rate_col: "oil_bbl"})
+    fit_df = fit_df.rename(columns={rate_col: "oil"})
     fit_df["uwi"] = "TYPE_CURVE"
-    fit_df["date"] = pd.date_range("2020-01-01", periods=len(fit_df), freq="MS")
+    fit_df["production_date"] = pd.date_range("2020-01-01", periods=len(fit_df), freq="MS")
 
     # Fit Arps model
-    params = fit_arps(fit_df, uwi="TYPE_CURVE", rate_column="oil_bbl", method="auto")
+    params = fit_arps(fit_df, uwi="TYPE_CURVE", rate_column="oil", method="auto")
 
     # Generate forecast
     forecast = arps_forecast(params, months=forecast_months)
@@ -113,7 +115,7 @@ def sample_type_curve(
     df: pd.DataFrame,
     n_samples: int = 1000,
     wells: list[str] | None = None,
-    rate_column: str = "oil_bbl",
+    rate_column: str = "oil",
     month_column: str = "month",
     uwi_column: str = "uwi",
     method: Literal["bootstrap", "parametric"] = "bootstrap",
@@ -136,7 +138,6 @@ def sample_type_curve(
 
     Example:
         >>> samples = sample_type_curve(aligned_df, n_samples=1000)
-        >>> # Calculate confidence intervals from samples
     """
     result_df = df.copy()
 
@@ -149,38 +150,32 @@ def sample_type_curve(
     all_samples = []
 
     if method == "bootstrap":
-        # Bootstrap resampling of wells
         for sample_id in range(n_samples):
-            # Sample wells with replacement
             sampled_wells = np.random.choice(unique_wells, size=n_wells, replace=True)
 
-            # Get production data for sampled wells
             sample_data = []
             for i, uwi in enumerate(sampled_wells):
                 well_data = result_df[result_df[uwi_column] == uwi].copy()
-                well_data["sample_uwi"] = f"{uwi}_{i}"  # Make unique for duplicates
+                well_data["sample_uwi"] = f"{uwi}_{i}"
                 sample_data.append(well_data)
 
             sample_df = pd.concat(sample_data)
-
-            # Calculate mean by month for this sample
             monthly = sample_df.groupby(month_column)[rate_column].mean().reset_index()
             monthly["sample_id"] = sample_id
             all_samples.append(monthly)
 
     else:  # parametric
-        # Fit distribution to each month and sample
         for month in sorted(result_df[month_column].unique()):
             month_rates = result_df[result_df[month_column] == month][rate_column].values
 
             if len(month_rates) < 3:
                 continue
 
-            # Fit log-normal distribution (common for production data)
             log_rates = np.log(month_rates[month_rates > 0])
-            mu, sigma = np.mean(log_rates), np.std(log_rates)
+            if len(log_rates) < 3:
+                continue
 
-            # Sample from distribution
+            mu, sigma = np.mean(log_rates), np.std(log_rates)
             samples = np.exp(np.random.normal(mu, sigma, n_samples))
 
             for sample_id, rate in enumerate(samples):
@@ -201,7 +196,7 @@ def sample_type_curve(
 def calculate_eur_distribution(
     samples_df: pd.DataFrame,
     economic_limit: float,
-    rate_column: str = "oil_bbl",
+    rate_column: str = "oil",
     month_column: str = "month",
 ) -> dict[str, float]:
     """Calculate EUR distribution from Monte Carlo samples.
@@ -218,14 +213,12 @@ def calculate_eur_distribution(
     Example:
         >>> samples = sample_type_curve(df, n_samples=1000)
         >>> eur_dist = calculate_eur_distribution(samples, economic_limit=10)
-        >>> print(f"P50 EUR: {eur_dist['p50']:,.0f}")
     """
     eur_values = []
 
     for sample_id in samples_df["sample_id"].unique():
         sample = samples_df[samples_df["sample_id"] == sample_id].sort_values(month_column)
 
-        # Find month where rate drops below economic limit
         below_limit = sample[sample[rate_column] < economic_limit]
 
         if len(below_limit) > 0:
@@ -246,4 +239,3 @@ def calculate_eur_distribution(
         "mean": float(np.mean(eur_array)),
         "std": float(np.std(eur_array)),
     }
-

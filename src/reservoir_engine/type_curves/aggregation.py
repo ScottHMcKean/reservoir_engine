@@ -2,19 +2,20 @@
 
 Functions for aligning, normalizing, and aggregating production
 data from multiple wells for type curve generation.
+
+Uses IHS column naming conventions (oil, gas, water in metric units).
 """
 
 from typing import Literal
 
-import numpy as np
 import pandas as pd
 
 
 def normalize_production(
     df: pd.DataFrame,
     wells: list[str] | None = None,
-    normalize_by: Literal["peak", "first_month", "lateral_length", "proppant"] = "peak",
-    rate_column: str = "oil_bbl",
+    normalize_by: Literal["peak", "first_month", "lateral_length", "custom"] = "peak",
+    rate_column: str = "oil",
     uwi_column: str = "uwi",
     normalization_values: dict[str, float] | None = None,
 ) -> pd.DataFrame:
@@ -27,23 +28,22 @@ def normalize_production(
             - "peak": Divide by peak rate
             - "first_month": Divide by first month rate
             - "lateral_length": Divide by lateral length (requires values)
-            - "proppant": Divide by proppant per foot (requires values)
+            - "custom": Use provided normalization_values
         rate_column: Name of rate column to normalize
         uwi_column: Name of UWI column
-        normalization_values: Dict of {uwi: value} for lateral_length or proppant
+        normalization_values: Dict of {uwi: value} for lateral_length or custom
 
     Returns:
         DataFrame with added "normalized_rate" column
 
     Example:
-        >>> normalized = normalize_production(df, normalize_by="peak")
+        >>> normalized = normalize_production(production_df, normalize_by="peak")
     """
     result = df.copy()
 
     if wells is not None:
         result = result[result[uwi_column].isin(wells)]
 
-    # Calculate normalization factor for each well
     norm_factors = {}
 
     for uwi in result[uwi_column].unique():
@@ -52,23 +52,22 @@ def normalize_production(
         if normalize_by == "peak":
             norm_factors[uwi] = well_data[rate_column].max()
         elif normalize_by == "first_month":
-            sorted_data = well_data.sort_values("date")
-            norm_factors[uwi] = sorted_data[rate_column].iloc[0]
-        elif normalize_by in ("lateral_length", "proppant"):
+            sorted_data = well_data.sort_values("production_date")
+            norm_factors[uwi] = sorted_data[rate_column].iloc[0] if len(sorted_data) > 0 else 1.0
+        elif normalize_by in ("lateral_length", "custom"):
             if normalization_values is None or uwi not in normalization_values:
                 raise ValueError(f"Missing normalization value for {uwi}")
             norm_factors[uwi] = normalization_values[uwi]
         else:
             raise ValueError(f"Unknown normalize_by: {normalize_by}")
 
-    # Apply normalization
-    result["normalized_rate"] = result.apply(
-        lambda row: row[rate_column] / norm_factors.get(row[uwi_column], 1.0)
-        if norm_factors.get(row[uwi_column], 0) > 0
-        else 0,
-        axis=1,
-    )
+    def safe_normalize(row: pd.Series) -> float:
+        factor = norm_factors.get(row[uwi_column], 1.0)
+        if factor > 0:
+            return row[rate_column] / factor
+        return 0.0
 
+    result["normalized_rate"] = result.apply(safe_normalize, axis=1)
     result["normalization_factor"] = result[uwi_column].map(norm_factors)
 
     return result
@@ -78,8 +77,8 @@ def align_production(
     df: pd.DataFrame,
     wells: list[str] | None = None,
     align_by: Literal["first_production", "peak_production", "completion_date"] = "first_production",
-    date_column: str = "date",
-    rate_column: str = "oil_bbl",
+    date_column: str = "production_date",
+    rate_column: str = "oil",
     uwi_column: str = "uwi",
     completion_dates: dict[str, str] | None = None,
 ) -> pd.DataFrame:
@@ -101,7 +100,7 @@ def align_production(
         DataFrame with added "month" column (0-indexed from alignment point)
 
     Example:
-        >>> aligned = align_production(df, align_by="first_production")
+        >>> aligned = align_production(production_df, align_by="first_production")
     """
     result = df.copy()
 
@@ -110,11 +109,13 @@ def align_production(
 
     result[date_column] = pd.to_datetime(result[date_column])
 
-    # Calculate reference date for each well
     ref_dates = {}
 
     for uwi in result[uwi_column].unique():
         well_data = result[result[uwi_column] == uwi].sort_values(date_column)
+
+        if len(well_data) == 0:
+            continue
 
         if align_by == "first_production":
             ref_dates[uwi] = well_data[date_column].min()
@@ -128,7 +129,6 @@ def align_production(
         else:
             raise ValueError(f"Unknown align_by: {align_by}")
 
-    # Calculate month offset from reference
     def calc_month(row: pd.Series) -> int:
         ref = ref_dates.get(row[uwi_column])
         if ref is None:
@@ -143,7 +143,7 @@ def align_production(
 
 def aggregate_by_month(
     df: pd.DataFrame,
-    rate_column: str = "oil_bbl",
+    rate_column: str = "oil",
     month_column: str = "month",
     uwi_column: str = "uwi",
     agg_functions: list[str] | None = None,
@@ -167,15 +167,11 @@ def aggregate_by_month(
         agg_functions = ["count", "mean", "std", "min", "max"]
 
     result = df.groupby(month_column)[rate_column].agg(agg_functions).reset_index()
-
-    # Rename columns
     result.columns = [month_column] + [f"{rate_column}_{fn}" for fn in agg_functions]
 
-    # Also count unique wells per month
     well_counts = df.groupby(month_column)[uwi_column].nunique().reset_index()
     well_counts.columns = [month_column, "well_count"]
 
     result = result.merge(well_counts, on=month_column)
 
     return result
-

@@ -2,6 +2,8 @@
 
 Pure functions for calculating statistics, detecting outliers,
 and summarizing production data.
+
+Uses IHS column naming conventions.
 """
 
 from typing import Literal
@@ -12,7 +14,7 @@ import pandas as pd
 
 def calculate_statistics(
     df: pd.DataFrame,
-    value_column: str = "oil_bbl",
+    value_column: str = "oil",
     group_by: str | list[str] | None = None,
 ) -> pd.DataFrame:
     """Calculate descriptive statistics for production data.
@@ -26,7 +28,7 @@ def calculate_statistics(
         DataFrame with statistics (count, mean, std, min, p25, p50, p75, max)
 
     Example:
-        >>> stats = calculate_statistics(production_df, "oil_bbl", group_by="uwi")
+        >>> stats = calculate_statistics(production_df, "oil", group_by="uwi")
     """
     if group_by is None:
         stats = df[value_column].describe()
@@ -37,7 +39,7 @@ def calculate_statistics(
 
 def detect_outliers(
     df: pd.DataFrame,
-    value_column: str = "oil_bbl",
+    value_column: str = "oil",
     method: Literal["iqr", "zscore", "mad"] = "iqr",
     threshold: float = 1.5,
 ) -> pd.DataFrame:
@@ -46,19 +48,17 @@ def detect_outliers(
     Args:
         df: DataFrame with production data
         value_column: Column to check for outliers
-        method: Detection method - "iqr" (interquartile range),
-                "zscore" (standard deviations), or "mad" (median absolute deviation)
+        method: Detection method:
+            - "iqr": Interquartile range
+            - "zscore": Standard deviations
+            - "mad": Median absolute deviation
         threshold: Threshold for outlier detection
-                   - IQR: multiplier for IQR (default 1.5)
-                   - Z-score: number of standard deviations (default 1.5 ~ 93%)
-                   - MAD: multiplier for MAD (default 1.5)
 
     Returns:
         Original DataFrame with added "is_outlier" boolean column
 
     Example:
-        >>> flagged_df = detect_outliers(production_df, "oil_bbl", method="iqr")
-        >>> outliers = flagged_df[flagged_df["is_outlier"]]
+        >>> flagged_df = detect_outliers(production_df, "oil", method="iqr")
     """
     df = df.copy()
     values = df[value_column].dropna()
@@ -98,10 +98,10 @@ def detect_outliers(
 def production_summary(
     df: pd.DataFrame,
     group_by: str = "uwi",
-    date_column: str = "date",
-    oil_column: str = "oil_bbl",
-    gas_column: str = "gas_mcf",
-    water_column: str = "water_bbl",
+    date_column: str = "production_date",
+    oil_column: str = "oil",
+    gas_column: str = "gas",
+    water_column: str = "water",
 ) -> pd.DataFrame:
     """Generate production summary statistics by well or group.
 
@@ -114,15 +114,7 @@ def production_summary(
         water_column: Name of water production column
 
     Returns:
-        DataFrame with summary statistics per group:
-        - first_production: First production date
-        - last_production: Last production date
-        - months_on: Number of producing months
-        - cum_oil: Cumulative oil (bbl)
-        - cum_gas: Cumulative gas (mcf)
-        - cum_water: Cumulative water (bbl)
-        - peak_oil_rate: Maximum monthly oil rate
-        - avg_oil_rate: Average monthly oil rate
+        DataFrame with summary statistics per group
     """
     summary = df.groupby(group_by).agg(
         first_production=(date_column, "min"),
@@ -141,8 +133,8 @@ def production_summary(
 def calculate_decline_rate(
     df: pd.DataFrame,
     uwi: str,
-    date_column: str = "date",
-    rate_column: str = "oil_bbl",
+    date_column: str = "production_date",
+    rate_column: str = "oil",
     window: int = 3,
 ) -> pd.DataFrame:
     """Calculate month-over-month decline rates for a well.
@@ -160,11 +152,62 @@ def calculate_decline_rate(
     well_df = df[df["uwi"] == uwi].copy()
     well_df = well_df.sort_values(date_column)
 
-    # Calculate smoothed rate
     well_df["smoothed_rate"] = well_df[rate_column].rolling(window=window, min_periods=1).mean()
-
-    # Calculate decline rate (month over month)
     well_df["decline_rate"] = well_df["smoothed_rate"].pct_change() * -1
 
     return well_df[[date_column, rate_column, "smoothed_rate", "decline_rate"]]
 
+
+def calculate_water_cut(
+    df: pd.DataFrame,
+    uwi: str | None = None,
+    oil_column: str = "oil",
+    water_column: str = "water",
+) -> pd.DataFrame:
+    """Calculate water cut (water / total liquid).
+
+    Args:
+        df: DataFrame with production data
+        uwi: Optional well filter
+        oil_column: Name of oil column
+        water_column: Name of water column
+
+    Returns:
+        DataFrame with added water_cut column
+    """
+    result = df.copy()
+
+    if uwi is not None:
+        result = result[result["uwi"] == uwi]
+
+    total_liquid = result[oil_column] + result[water_column]
+    result["water_cut"] = np.where(total_liquid > 0, result[water_column] / total_liquid, 0)
+
+    return result
+
+
+def calculate_gor(
+    df: pd.DataFrame,
+    uwi: str | None = None,
+    gas_column: str = "gas",
+    oil_column: str = "oil",
+) -> pd.DataFrame:
+    """Calculate gas-oil ratio.
+
+    Args:
+        df: DataFrame with production data
+        uwi: Optional well filter
+        gas_column: Name of gas column (E3M3)
+        oil_column: Name of oil column (M3)
+
+    Returns:
+        DataFrame with added gor column (E3M3/M3)
+    """
+    result = df.copy()
+
+    if uwi is not None:
+        result = result[result["uwi"] == uwi]
+
+    result["gor"] = np.where(result[oil_column] > 0, result[gas_column] / result[oil_column], 0)
+
+    return result

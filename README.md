@@ -2,335 +2,347 @@
 
 A modular, Databricks-native framework for reservoir engineering workflows. Built for simplicity, testability, and extensibility.
 
-## Overview
+## Key Features
 
-Reservoir Engine provides a clean, composable toolkit for decline curve analysis, type curve generation, and production forecasting. It leverages Spark for distributed computation and Lakebase (Postgres) for persistent storage, while maintaining a simple functional API that works identically in notebooks and applications.
+- **Ruthlessly Simple**: Pure functions, explicit data contracts, no magic
+- **H3 Spatial Indexing**: Consistent hexagonal grid for all geospatial operations
+- **IHS-Native Schemas**: Direct compatibility with IHS/Enverus data formats
+- **Databricks-Ready**: Spark and Lakebase (Postgres) integration
+- **Comprehensive Tests**: 55 tests covering core functionality
+
+## Quick Start
+
+```python
+from reservoir_engine.data import load_well_header_csv, load_production_monthly_csv
+from reservoir_engine.dca import fit_arps, arps_forecast
+from reservoir_engine.type_curves import align_production, generate_type_curve
+
+# Load data
+wells = load_well_header_csv("data/well_header.csv")
+production = load_production_monthly_csv("data/well_production_monthly.csv")
+
+# Fit decline curve
+params = fit_arps(production, uwi="100010106021W500")
+forecast = arps_forecast(params, months=360)
+
+# Generate type curve
+aligned = align_production(production)
+type_curve = generate_type_curve(aligned, percentiles=[10, 50, 90])
+```
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                              DATA SOURCES                                    │
-│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────────────────────┐│
-│  │ Production  │ │   Surveys   │ │ Completions │ │ Steam Volumes (Thermal) ││
-│  │    (IHS)    │ │    (IHS)    │ │    (IHS)    │ │         (IHS)           ││
-│  └──────┬──────┘ └──────┬──────┘ └──────┬──────┘ └────────────┬────────────┘│
-└─────────┼───────────────┼───────────────┼────────────────────┼──────────────┘
-          │               │               │                    │
-          ▼               ▼               ▼                    ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           DATA LAYER (data/)                                 │
-│  ┌────────────────────────────────────────────────────────────────────────┐ │
-│  │ loaders.py - Unified data ingestion from IHS, CSV, Delta, Postgres     │ │
-│  │ schemas.py - Pydantic models for validation & type safety              │ │
-│  │ storage.py - Delta Lake & Lakebase (Postgres) read/write utilities     │ │
-│  └────────────────────────────────────────────────────────────────────────┘ │
-│                                    │                                         │
-│                    ┌───────────────┼───────────────┐                        │
-│                    ▼               ▼               ▼                        │
-│           ┌────────────┐   ┌────────────┐   ┌────────────┐                  │
-│           │   Delta    │   │  Lakebase  │   │  In-Memory │                  │
-│           │   Tables   │◄─►│ (Postgres) │◄─►│  DataFrames│                  │
-│           └────────────┘   └────────────┘   └────────────┘                  │
+│                              DATA LAYER                                      │
+│  ┌─────────────────────────────────────────────────────────────────────────┐│
+│  │ loaders.py - CSV, Delta Lake, Postgres with IHS column mappings        ││
+│  │ schemas.py - Pydantic models: WellHeader, ProductionMonthly, etc.      ││
+│  │ storage.py - Delta/Postgres persistence                                 ││
+│  └─────────────────────────────────────────────────────────────────────────┘│
 └─────────────────────────────────────────────────────────────────────────────┘
                                     │
         ┌───────────────────────────┼───────────────────────────┐
         ▼                           ▼                           ▼
 ┌───────────────┐          ┌───────────────┐          ┌───────────────┐
 │  EDA Module   │          │  DCA Module   │          │  Type Curves  │
-│    (eda/)     │          │    (dca/)     │          │(type_curves/) │
+│               │          │               │          │  (H3-based)   │
 ├───────────────┤          ├───────────────┤          ├───────────────┤
-│• analysis.py  │          │• models.py    │          │• selection.py │
-│  - statistics │          │  - Arps       │          │  - AOI picker │
-│  - trends     │          │  - Butler     │          │  - polygon    │
-│  - outliers   │          │• autofit.py   │          │• aggregation  │
-│• plots.py     │          │  - curve fit  │          │  - normalize  │
-│  - time series│          │  - optimize   │          │  - align      │
-│  - scatter    │          │• forecast.py  │          │• probabilistic│
-│  - heatmaps   │          │  - EUR calc   │          │  - P10/50/90  │
+│• statistics   │          │• Arps model   │          │• H3 selection │
+│• outliers     │          │• Butler SAGD  │          │• normalization│
+│• plots        │          │• autofit      │          │• P10/50/90    │
 └───────┬───────┘          └───────┬───────┘          └───────┬───────┘
         │                          │                          │
         └──────────────────────────┼──────────────────────────┘
                                    ▼
                         ┌───────────────────┐
                         │   Uplift Module   │
-                        │     (uplift/)     │
+                        │   (H3 + ML)       │
                         ├───────────────────┤
-                        │• features.py      │
-                        │  - engineering    │
-                        │  - spatial        │
-                        │• models.py        │
-                        │  - ML training    │
-                        │  - validation     │
-                        │• inference.py     │
-                        │  - predictions    │
-                        │  - mapping        │
+                        │• feature matrix   │
+                        │• XGBoost/RF       │
+                        │• H3 grid predict  │
                         └───────────────────┘
 ```
 
-## Data Flow
+## Modules
 
-### 1. Ingestion Pipeline
+### Data (`reservoir_engine.data`)
 
-```
-IHS Data Feeds
-     │
-     ├── Production: Monthly oil/gas/water volumes by well
-     ├── Surveys: Directional survey data (MD, TVD, inclination, azimuth)
-     ├── Completions: Perforations, stages, proppant, fluid volumes
-     └── Steam (Thermal): Injection volumes, pressures, temperatures
-     │
-     ▼
-┌─────────────────────────────────────────────────────────────┐
-│ data.loaders.load_ihs_production(catalog, schema, table)    │
-│ data.loaders.load_ihs_surveys(catalog, schema, table)       │
-│ data.loaders.load_ihs_completions(catalog, schema, table)   │
-│ data.loaders.load_ihs_steam(catalog, schema, table)         │
-└─────────────────────────────────────────────────────────────┘
-     │
-     ▼
-┌─────────────────────────────────────────────────────────────┐
-│ data.schemas - Validation & Normalization                   │
-│ • ProductionRecord: uwi, date, oil, gas, water, days_on     │
-│ • SurveyRecord: uwi, md, tvd, inclination, azimuth          │
-│ • CompletionRecord: uwi, stage, perf_top, perf_btm, ...     │
-│ • SteamRecord: uwi, date, steam_injected, pressure, temp    │
-└─────────────────────────────────────────────────────────────┘
-     │
-     ▼
-┌─────────────────────────────────────────────────────────────┐
-│ data.storage - Persistence Layer                            │
-│ • to_delta(df, path) / from_delta(path)                     │
-│ • to_postgres(df, table) / from_postgres(table)             │
-│ • sync_delta_to_postgres(delta_path, pg_table)              │
-└─────────────────────────────────────────────────────────────┘
-```
+Load, validate, and store reservoir data.
 
-### 2. Analysis Flow
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ EXPLORATION (eda/)                                                          │
-│                                                                             │
-│   production_df = load_production(...)                                      │
-│         │                                                                   │
-│         ├─► eda.analysis.calculate_statistics(df)                           │
-│         │       → mean, std, percentiles by well/field                      │
-│         │                                                                   │
-│         ├─► eda.analysis.detect_outliers(df, method="iqr")                  │
-│         │       → flagged records for review                                │
-│         │                                                                   │
-│         └─► eda.plots.production_timeseries(df, groupby="well")             │
-│                 → matplotlib/plotly figure (reusable in notebook & app)     │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ DECLINE CURVE ANALYSIS (dca/)                                               │
-│                                                                             │
-│   # Unconventional: Arps Hyperbolic/Harmonic                                │
-│   params = dca.autofit.fit_arps(production_df, uwi="WELL-001")              │
-│         → ArpsParams(qi, di, b, t_switch)                                   │
-│                                                                             │
-│   forecast = dca.forecast.arps_forecast(params, months=360)                 │
-│         → DataFrame[date, rate, cumulative]                                 │
-│                                                                             │
-│   # Thermal: Butler SAGD                                                    │
-│   params = dca.autofit.fit_butler(production_df, steam_df, uwi="PAD-01")    │
-│         → ButlerParams(m, phi, So, k, ...)                                  │
-│                                                                             │
-│   forecast = dca.forecast.butler_forecast(params, months=240)               │
-│         → DataFrame[date, rate, sor, cumulative]                            │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ TYPE CURVES (type_curves/)                                                  │
-│                                                                             │
-│   # Select wells by AOI or polygon                                          │
-│   wells = type_curves.selection.wells_in_polygon(polygon_geojson)           │
-│         → list[str] (UWIs)                                                  │
-│                                                                             │
-│   # Normalize and align production                                          │
-│   aligned = type_curves.aggregation.normalize_production(                   │
-│       production_df,                                                        │
-│       wells=wells,                                                          │
-│       align_by="first_production"                                           │
-│   )                                                                         │
-│                                                                             │
-│   # Generate probabilistic type curve                                       │
-│   type_curve = type_curves.probabilistic.generate_type_curve(               │
-│       aligned,                                                              │
-│       percentiles=[10, 50, 90]                                              │
-│   )                                                                         │
-│         → DataFrame[month, p10, p50, p90]                                   │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ UPLIFT ANALYSIS (uplift/)                                                   │
-│                                                                             │
-│   # Feature engineering                                                     │
-│   features = uplift.features.build_feature_matrix(                          │
-│       production_df, completions_df, surveys_df                             │
-│   )                                                                         │
-│         → DataFrame with engineered features                                │
-│                                                                             │
-│   # Train model                                                             │
-│   model = uplift.models.train_production_model(                             │
-│       features,                                                             │
-│       target="eur_180",                                                     │
-│       model_type="xgboost"                                                  │
-│   )                                                                         │
-│                                                                             │
-│   # Spatial inference                                                       │
-│   predictions = uplift.inference.predict_on_grid(                           │
-│       model,                                                                │
-│       grid_df,                                                              │
-│       resolution_m=500                                                      │
-│   )                                                                         │
-│         → GeoDataFrame with predicted values                                │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-## Key Data Models
-
-### Production Record
 ```python
-@dataclass
-class ProductionRecord:
-    uwi: str              # Unique Well Identifier
-    date: date            # Production month
-    oil_bbl: float        # Oil production (barrels)
-    gas_mcf: float        # Gas production (MCF)
-    water_bbl: float      # Water production (barrels)
-    days_on: int          # Producing days in month
+# CSV loading (development)
+wells = load_well_header_csv("data/well_header.csv")
+production = load_production_monthly_csv("data/well_production_monthly.csv")
+
+# Delta Lake (Databricks)
+wells = load_well_header_delta("catalog", "schema", "well_header")
 ```
 
-### Arps Parameters (Unconventional)
+**Schemas:**
+- `WellHeader` - Master well info (location, depths, formation)
+- `ProductionMonthly` - Monthly oil/gas/water volumes
+- `ProductionSummary` - Pre-calculated EUR metrics
+- `SurveyStation` - Directional survey points
+- `Completion` - Completion intervals and treatments
+
+### EDA (`reservoir_engine.eda`)
+
+Exploratory data analysis and visualization.
+
 ```python
-@dataclass
-class ArpsParams:
-    qi: float             # Initial rate (bbl/day or mcf/day)
-    di: float             # Initial decline rate (1/month)
-    b: float              # Hyperbolic exponent (0 ≤ b ≤ 2)
-    t_switch: float       # Time to switch to exponential (months)
-    d_min: float          # Minimum decline rate (terminal)
+from reservoir_engine.eda import calculate_statistics, detect_outliers, production_summary
+
+stats = calculate_statistics(production, value_column="oil", group_by="uwi")
+outliers = detect_outliers(production, "oil", method="iqr")
+summary = production_summary(production)
 ```
 
-### Butler Parameters (Thermal SAGD)
+### DCA (`reservoir_engine.dca`)
+
+Decline curve analysis for production forecasting.
+
+**Arps Hyperbolic (Unconventional):**
 ```python
-@dataclass
-class ButlerParams:
-    m: float              # Drainage rate coefficient
-    phi: float            # Porosity
-    So: float             # Initial oil saturation
-    k: float              # Permeability (mD)
-    h: float              # Pay thickness (m)
-    L: float              # Well pair length (m)
+from reservoir_engine.dca import fit_arps, arps_forecast, calculate_eur
+
+params = fit_arps(production, uwi="100010106021W500", method="auto")
+# ArpsParams(qi=150.0, di=0.12, b=0.85)
+
+forecast = arps_forecast(params, months=360)
+eur = calculate_eur(params, economic_limit=5.0)
 ```
 
-## Module Design Principles
+**Butler SAGD (Thermal):**
+```python
+from reservoir_engine.dca import fit_butler, butler_forecast
 
-1. **Functions over Classes**: Prefer pure functions with clear inputs/outputs
-2. **Composition over Inheritance**: Build complex behavior by composing simple functions
-3. **Loose Coupling**: Modules communicate via well-defined data structures
-4. **Single Responsibility**: Each function does one thing well
-5. **Testability**: All functions are side-effect free where possible
+params = fit_butler(production, steam_df, uwi="PAD-01")
+forecast = butler_forecast(params, months=240, include_sor=True)
+```
+
+### Type Curves (`reservoir_engine.type_curves`)
+
+Probabilistic type curve generation using H3 spatial indexing.
+
+```python
+from reservoir_engine.type_curves import (
+    wells_in_h3_ring,
+    wells_in_polygon_h3,
+    align_production,
+    generate_type_curve,
+)
+
+# Select wells using H3 (5km radius at resolution 7)
+wells = wells_in_h3_ring(wells_df, center_lat=54.5, center_lon=-116.5, k_rings=3)
+
+# Or by polygon
+polygon = [(54.0, -117.0), (54.0, -116.0), (55.0, -116.0), (55.0, -117.0)]
+wells = wells_in_polygon_h3(wells_df, polygon, resolution=8)
+
+# Generate type curve
+aligned = align_production(production, wells=wells, align_by="first_production")
+type_curve = generate_type_curve(aligned, percentiles=[10, 50, 90])
+```
+
+### Uplift (`reservoir_engine.uplift`)
+
+ML-based production prediction with H3 spatial features.
+
+```python
+from reservoir_engine.uplift import (
+    build_feature_matrix,
+    calculate_eur_targets,
+    train_production_model,
+    create_prediction_grid_h3,
+    predict_on_grid,
+)
+
+# Build features
+features = build_feature_matrix(wells, production, completions)
+targets = calculate_eur_targets(production, months=[12, 24, 60])
+
+# Train model
+model, metrics, preds = train_production_model(
+    features.merge(targets, on="uwi"),
+    target_column="eur_12m",
+    model_type="xgboost"
+)
+
+# Predict on H3 grid
+grid = create_prediction_grid_h3(-117, 54, -116, 55, resolution=8)
+predictions = predict_on_grid(model, grid, feature_columns, wells)
+```
+
+## H3 Spatial Indexing
+
+All geospatial operations use [H3](https://h3geo.org/) hexagonal indexing:
+
+| Resolution | Edge Length | Area | Use Case |
+|------------|-------------|------|----------|
+| 4 | ~22 km | ~1,770 km² | Regional analysis |
+| 7 | ~1.2 km | ~5.16 km² | Field-level |
+| 9 | ~174 m | ~0.1 km² | Well-level (default) |
+| 10 | ~66 m | ~0.015 km² | Precise location |
+
+**Why H3?**
+- Consistent hexagonal cells (no projection distortion)
+- Hierarchical (zoom in/out seamlessly)
+- Native Databricks/Spark support
+- Fast spatial queries
+
+## Data Requirements
+
+See [docs/DATA_REQUIREMENTS.md](docs/DATA_REQUIREMENTS.md) for detailed schema documentation.
+
+**Available Tables:**
+- well_header (~9,409 wells)
+- production_monthly (~782K records)
+- production_summary (~5,735 wells)
+- survey_stations (~730K points)
+- completions (~342K records)
+
+**Missing Tables (for full functionality):**
+- steam_injection (required for Butler/SAGD model)
+- well_economics (required for NPV analysis)
+- frac_treatment_details (partial - missing proppant/fluid data)
+
+## Installation
+
+```bash
+# Development (all dependencies)
+uv sync --all-extras
+
+# Production (minimal for Databricks)
+uv sync
+
+# App only (Streamlit)
+uv sync --extra app
+```
+
+## Running the App
+
+The Streamlit app provides a Databricks-themed UI for all modules:
+
+```bash
+# Run locally (test mode - uses CSV data)
+uv run streamlit run app/main.py
+
+# Access at http://localhost:8501
+```
+
+### App Pages
+
+| Page | Description |
+|------|-------------|
+| **EDA** | Production statistics, outlier detection, well maps |
+| **DCA** | Arps hyperbolic and Butler SAGD fitting, batch forecasting |
+| **Type Curves** | H3-based well selection, P10/50/90 type curves |
+| **Uplift** | Feature engineering, ML training, spatial prediction |
+
+### App Architecture
+
+```
+app/
+├── main.py           # Entry point, navigation, theming
+├── config.py         # AppConfig (test/prod modes)
+├── database.py       # CSVBackend (test) / LakebaseBackend (prod)
+└── pages/
+    ├── eda.py        # EDA visualizations
+    ├── dca.py        # Decline curve analysis
+    ├── type_curves.py # Type curve generation
+    └── uplift.py     # ML-based prediction
+```
+
+### Test Mode vs Prod Mode
+
+| Mode | Data Source | Use Case |
+|------|-------------|----------|
+| **test** | Local CSV files in `data/` | Development, demos |
+| **prod** | Lakebase (Postgres) on Databricks | Production deployment |
+
+Configure via `config.yaml`:
+```yaml
+app:
+  mode: test  # or prod
+  lakebase_instance: my-instance  # for prod mode
+```
+
+## Testing
+
+```bash
+# Run all tests
+uv run pytest tests/ -v
+
+# Run specific module tests
+uv run pytest tests/test_dca/ -v
+```
+
+**Current status:** 55 tests, all passing
 
 ## Project Structure
 
 ```
 reservoir_engine/
-├── README.md
-├── pyproject.toml
-├── src/
-│   └── reservoir_engine/
-│       ├── __init__.py
-│       ├── config.py              # Configuration management
-│       ├── data/
-│       │   ├── __init__.py
-│       │   ├── loaders.py         # Data loading from various sources
-│       │   ├── schemas.py         # Pydantic data models
-│       │   └── storage.py         # Delta/Postgres storage utilities
-│       ├── eda/
-│       │   ├── __init__.py
-│       │   ├── analysis.py        # Statistical analysis functions
-│       │   └── plots.py           # Visualization functions
-│       ├── dca/
-│       │   ├── __init__.py
-│       │   ├── models.py          # Decline curve models
-│       │   ├── autofit.py         # Curve fitting optimization
-│       │   └── forecast.py        # Production forecasting
-│       ├── type_curves/
-│       │   ├── __init__.py
-│       │   ├── selection.py       # AOI/polygon well selection
-│       │   ├── aggregation.py     # Production normalization
-│       │   └── probabilistic.py   # P10/P50/P90 generation
-│       └── uplift/
-│           ├── __init__.py
-│           ├── features.py        # Feature engineering
-│           ├── models.py          # ML model training
-│           └── inference.py       # Spatial prediction
-└── tests/
-    ├── conftest.py                # Shared fixtures
-    ├── test_data/
-    ├── test_eda/
-    ├── test_dca/
-    ├── test_type_curves/
-    └── test_uplift/
+├── src/reservoir_engine/
+│   ├── config.py              # Configuration
+│   ├── data/
+│   │   ├── loaders.py         # IHS-aware data loading
+│   │   ├── schemas.py         # Pydantic data models
+│   │   └── storage.py         # Delta/Postgres persistence
+│   ├── eda/
+│   │   ├── analysis.py        # Statistics, outliers
+│   │   └── plots.py           # Plotly/Matplotlib
+│   ├── dca/
+│   │   ├── models.py          # Arps, Butler equations
+│   │   ├── autofit.py         # Curve fitting
+│   │   └── forecast.py        # Forecasting, EUR
+│   ├── type_curves/
+│   │   ├── selection.py       # H3-based well selection
+│   │   ├── aggregation.py     # Normalization, alignment
+│   │   └── probabilistic.py   # P10/P50/P90 generation
+│   └── uplift/
+│       ├── features.py        # Feature engineering
+│       ├── models.py          # ML training
+│       └── inference.py       # H3 grid prediction
+├── tests/                      # 55 pytest tests
+├── docs/
+│   ├── MODULARITY_REVIEW.md   # Architecture assessment
+│   └── DATA_REQUIREMENTS.md   # Schema documentation
+└── pyproject.toml
 ```
 
-## Quick Start
+## Design Principles
 
-```python
-from reservoir_engine.data import loaders, storage
-from reservoir_engine.dca import autofit, forecast
-from reservoir_engine.type_curves import selection, probabilistic
+1. **Functions over Classes** - Pure functions with clear inputs/outputs
+2. **Explicit Data Contracts** - Pydantic schemas for all data structures
+3. **Loose Coupling** - Modules communicate via DataFrames
+4. **Single Responsibility** - Each function does one thing well
+5. **H3 for All Spatial** - Consistent hexagonal grid everywhere
 
-# Load production data
-production = loaders.load_from_delta("catalog.schema.production")
+## Modularity Review
 
-# Fit decline curve for a single well
-params = autofit.fit_arps(production, uwi="WELL-001")
+See [docs/MODULARITY_REVIEW.md](docs/MODULARITY_REVIEW.md) for detailed analysis.
 
-# Generate 30-year forecast
-fcst = forecast.arps_forecast(params, months=360)
-
-# Generate type curve for an area
-wells = selection.wells_in_polygon(my_polygon)
-type_curve = probabilistic.generate_type_curve(production, wells)
-```
-
-## Installation
-
-```bash
-# Development
-uv sync --all-extras
-
-# Production (Databricks)
-uv sync
-```
-
-## Running Tests
-
-```bash
-uv run pytest tests/ -v
-```
+**Key findings:**
+- No circular dependencies
+- Easy to add new DCA models
+- Easy to swap data providers
+- Fast test suite (2.4s)
 
 ## Comparison with Commercial Tools
 
 | Feature | Reservoir Engine | ComboCurve | Enersight | EVA Turing |
 |---------|-----------------|------------|-----------|------------|
-| Open Source | ✅ | ❌ | ❌ | ❌ |
-| Databricks Native | ✅ | ❌ | ❌ | ❌ |
-| Arps DCA | ✅ | ✅ | ✅ | ✅ |
-| Butler (Thermal) | ✅ | ❌ | ✅ | ❌ |
-| ML Type Curves | ✅ | ✅ | ❌ | ✅ |
-| Modular/Composable | ✅ | ❌ | ❌ | ❌ |
-| Notebook-First | ✅ | ❌ | ❌ | ❌ |
+| Open Source | Yes | No | No | No |
+| Databricks Native | Yes | No | No | No |
+| H3 Spatial | Yes | No | No | No |
+| Arps DCA | Yes | Yes | Yes | Yes |
+| Butler (Thermal) | Yes | No | Yes | No |
+| ML Type Curves | Yes | Yes | No | Yes |
+| Modular/Composable | Yes | No | No | No |
 
 ## License
 
 See LICENSE file.
-

@@ -1,58 +1,183 @@
-"""Spatial selection utilities for well filtering.
+"""Spatial selection utilities using H3 hexagonal grid.
 
-Provides functions to select wells by polygon, bounding box,
-or proximity to a point.
+H3 provides a consistent, hierarchical spatial index that is:
+- Resolution-independent (can zoom in/out)
+- Efficient for spatial queries
+- Native to Databricks and compatible with Spark
+
+Key H3 resolutions:
+- Resolution 4: ~1,770 km² (regional analysis)
+- Resolution 7: ~5.16 km² (field-level)
+- Resolution 9: ~0.1 km² (well-level, ~105m edge)
+- Resolution 10: ~0.015 km² (precise, ~66m edge)
 """
-
-from typing import Any
 
 import pandas as pd
 
+# Default H3 resolution for well-level analysis
+DEFAULT_RESOLUTION = 9
 
-def wells_in_polygon(
+
+def get_h3_index(lat: float, lon: float, resolution: int = DEFAULT_RESOLUTION) -> str:
+    """Get H3 index for a lat/lon point.
+
+    Args:
+        lat: Latitude
+        lon: Longitude
+        resolution: H3 resolution (0-15, higher = finer)
+
+    Returns:
+        H3 index string
+
+    Example:
+        >>> h3_idx = get_h3_index(54.5, -116.5, resolution=9)
+    """
+    import h3
+
+    return h3.latlng_to_cell(lat, lon, resolution)
+
+
+def add_h3_index(
+    df: pd.DataFrame,
+    lat_column: str = "surface_latitude",
+    lon_column: str = "surface_longitude",
+    resolution: int = DEFAULT_RESOLUTION,
+    h3_column: str = "h3_index",
+) -> pd.DataFrame:
+    """Add H3 index column to a DataFrame with lat/lon.
+
+    Args:
+        df: DataFrame with lat/lon columns
+        lat_column: Name of latitude column
+        lon_column: Name of longitude column
+        resolution: H3 resolution
+        h3_column: Name for new H3 index column
+
+    Returns:
+        DataFrame with added H3 index column
+
+    Example:
+        >>> wells_with_h3 = add_h3_index(wells_df)
+    """
+    import h3
+
+    result = df.copy()
+    result[h3_column] = result.apply(
+        lambda row: h3.latlng_to_cell(row[lat_column], row[lon_column], resolution)
+        if pd.notna(row[lat_column]) and pd.notna(row[lon_column])
+        else None,
+        axis=1,
+    )
+    return result
+
+
+def wells_in_h3_cells(
     wells_df: pd.DataFrame,
-    polygon: dict[str, Any] | list[tuple[float, float]],
-    lat_column: str = "latitude",
-    lon_column: str = "longitude",
+    h3_cells: list[str],
+    h3_column: str = "h3_index",
     uwi_column: str = "uwi",
 ) -> list[str]:
-    """Select wells within a polygon.
+    """Select wells that fall within specified H3 cells.
+
+    Args:
+        wells_df: DataFrame with H3 index column
+        h3_cells: List of H3 cell indices to filter by
+        h3_column: Name of H3 index column
+        uwi_column: Name of UWI column
+
+    Returns:
+        List of UWIs within the specified cells
+
+    Example:
+        >>> cells = get_h3_ring(center_h3, k=2)  # 2-ring around center
+        >>> wells = wells_in_h3_cells(wells_df, cells)
+    """
+    mask = wells_df[h3_column].isin(h3_cells)
+    return wells_df.loc[mask, uwi_column].tolist()
+
+
+def wells_in_h3_ring(
+    wells_df: pd.DataFrame,
+    center_lat: float,
+    center_lon: float,
+    k_rings: int = 1,
+    resolution: int = DEFAULT_RESOLUTION,
+    lat_column: str = "surface_latitude",
+    lon_column: str = "surface_longitude",
+    uwi_column: str = "uwi",
+) -> list[str]:
+    """Select wells within k H3 rings of a center point.
 
     Args:
         wells_df: DataFrame with well locations
-        polygon: GeoJSON polygon dict or list of (lon, lat) tuples
+        center_lat: Center point latitude
+        center_lon: Center point longitude
+        k_rings: Number of rings around center (1 = immediate neighbors)
+        resolution: H3 resolution
         lat_column: Name of latitude column
         lon_column: Name of longitude column
         uwi_column: Name of UWI column
 
     Returns:
-        List of UWIs for wells within the polygon
+        List of UWIs within the ring
 
     Example:
-        >>> polygon = [(-110, 50), (-110, 51), (-109, 51), (-109, 50), (-110, 50)]
-        >>> wells = wells_in_polygon(df, polygon)
+        >>> wells = wells_in_h3_ring(wells_df, 54.5, -116.5, k_rings=3)
     """
-    try:
-        from shapely.geometry import Point, Polygon, shape
-    except ImportError:
-        raise ImportError("shapely required for spatial operations. Install with: uv add shapely")
+    import h3
 
-    # Convert polygon to shapely geometry
-    if isinstance(polygon, dict):
-        # GeoJSON format
-        poly = shape(polygon)
-    else:
-        # List of coordinates
-        poly = Polygon(polygon)
+    # Get center cell and its k-ring
+    center_cell = h3.latlng_to_cell(center_lat, center_lon, resolution)
+    ring_cells = h3.grid_disk(center_cell, k_rings)
 
-    # Check each well
-    selected = []
-    for _, row in wells_df.iterrows():
-        point = Point(row[lon_column], row[lat_column])
-        if poly.contains(point):
-            selected.append(row[uwi_column])
+    # Add H3 index to wells if not present
+    wells_with_h3 = add_h3_index(wells_df, lat_column, lon_column, resolution)
 
-    return selected
+    return wells_in_h3_cells(wells_with_h3, list(ring_cells), uwi_column=uwi_column)
+
+
+def wells_in_polygon_h3(
+    wells_df: pd.DataFrame,
+    polygon_coords: list[tuple[float, float]],
+    resolution: int = DEFAULT_RESOLUTION,
+    lat_column: str = "surface_latitude",
+    lon_column: str = "surface_longitude",
+    uwi_column: str = "uwi",
+) -> list[str]:
+    """Select wells within a polygon using H3 polyfill.
+
+    Args:
+        wells_df: DataFrame with well locations
+        polygon_coords: List of (lat, lon) tuples defining polygon boundary
+        resolution: H3 resolution for polyfill
+        lat_column: Name of latitude column
+        lon_column: Name of longitude column
+        uwi_column: Name of UWI column
+
+    Returns:
+        List of UWIs within the polygon
+
+    Example:
+        >>> polygon = [(54.0, -117.0), (54.0, -116.0), (55.0, -116.0), (55.0, -117.0)]
+        >>> wells = wells_in_polygon_h3(wells_df, polygon)
+    """
+    import h3
+
+    # H3 expects GeoJSON format: outer ring as list of [lng, lat] pairs
+    geojson_coords = [[lon, lat] for lat, lon in polygon_coords]
+    # Close the polygon if needed
+    if geojson_coords[0] != geojson_coords[-1]:
+        geojson_coords.append(geojson_coords[0])
+
+    geojson_polygon = {"type": "Polygon", "coordinates": [geojson_coords]}
+
+    # Get all H3 cells that cover the polygon
+    polygon_cells = h3.geo_to_cells(geojson_polygon, resolution)
+
+    # Add H3 index to wells and filter
+    wells_with_h3 = add_h3_index(wells_df, lat_column, lon_column, resolution)
+
+    return wells_in_h3_cells(wells_with_h3, list(polygon_cells), uwi_column=uwi_column)
 
 
 def wells_in_bbox(
@@ -61,11 +186,13 @@ def wells_in_bbox(
     min_lat: float,
     max_lon: float,
     max_lat: float,
-    lat_column: str = "latitude",
-    lon_column: str = "longitude",
+    lat_column: str = "surface_latitude",
+    lon_column: str = "surface_longitude",
     uwi_column: str = "uwi",
 ) -> list[str]:
     """Select wells within a bounding box.
+
+    Simple lat/lon filtering without H3 (faster for bbox queries).
 
     Args:
         wells_df: DataFrame with well locations
@@ -78,10 +205,10 @@ def wells_in_bbox(
         uwi_column: Name of UWI column
 
     Returns:
-        List of UWIs for wells within the bounding box
+        List of UWIs within the bounding box
 
     Example:
-        >>> wells = wells_in_bbox(df, -110, 50, -109, 51)
+        >>> wells = wells_in_bbox(wells_df, -117, 54, -116, 55)
     """
     mask = (
         (wells_df[lon_column] >= min_lon)
@@ -89,63 +216,71 @@ def wells_in_bbox(
         & (wells_df[lat_column] >= min_lat)
         & (wells_df[lat_column] <= max_lat)
     )
-
     return wells_df.loc[mask, uwi_column].tolist()
 
 
-def wells_near_point(
-    wells_df: pd.DataFrame,
-    center_lon: float,
-    center_lat: float,
-    radius_km: float,
-    lat_column: str = "latitude",
-    lon_column: str = "longitude",
-    uwi_column: str = "uwi",
-) -> list[str]:
-    """Select wells within a radius of a point.
-
-    Uses Haversine formula for accurate distance calculation.
+def get_h3_neighbors(h3_index: str, k: int = 1) -> list[str]:
+    """Get k-ring neighbors of an H3 cell.
 
     Args:
-        wells_df: DataFrame with well locations
-        center_lon: Center point longitude
-        center_lat: Center point latitude
-        radius_km: Search radius in kilometers
-        lat_column: Name of latitude column
-        lon_column: Name of longitude column
-        uwi_column: Name of UWI column
+        h3_index: H3 cell index
+        k: Number of rings (1 = immediate neighbors)
 
     Returns:
-        List of UWIs for wells within the radius
+        List of H3 indices including center and all neighbors
+    """
+    import h3
+
+    return list(h3.grid_disk(h3_index, k))
+
+
+def get_h3_resolution_for_radius(radius_km: float) -> int:
+    """Get appropriate H3 resolution for a given radius.
+
+    Args:
+        radius_km: Target radius in kilometers
+
+    Returns:
+        H3 resolution that best matches the radius
 
     Example:
-        >>> wells = wells_near_point(df, -110.5, 50.5, radius_km=10)
+        >>> resolution = get_h3_resolution_for_radius(5.0)  # ~5km radius
     """
-    import numpy as np
+    # H3 edge lengths by resolution (approximate, in km)
+    # Resolution: edge_length_km
+    edge_lengths = {
+        0: 1107.712,
+        1: 418.676,
+        2: 158.244,
+        3: 59.810,
+        4: 22.606,
+        5: 8.544,
+        6: 3.229,
+        7: 1.220,
+        8: 0.461,
+        9: 0.174,
+        10: 0.066,
+        11: 0.025,
+        12: 0.009,
+        13: 0.003,
+        14: 0.001,
+        15: 0.0005,
+    }
 
-    # Haversine distance calculation
-    R = 6371  # Earth radius in km
-
-    lat1 = np.radians(center_lat)
-    lat2 = np.radians(wells_df[lat_column].values)
-    dlat = np.radians(wells_df[lat_column].values - center_lat)
-    dlon = np.radians(wells_df[lon_column].values - center_lon)
-
-    a = np.sin(dlat / 2) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2) ** 2
-    c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
-    distances = R * c
-
-    mask = distances <= radius_km
-    return wells_df.loc[mask, uwi_column].tolist()
+    # Find resolution where edge length is closest to radius
+    for res, edge in edge_lengths.items():
+        if edge <= radius_km:
+            return res
+    return 15
 
 
 def filter_wells_by_attributes(
     wells_df: pd.DataFrame,
     uwis: list[str] | None = None,
-    min_production_months: int | None = None,
+    hole_direction: str | None = None,
+    play_type: str | None = None,
     formation: str | None = None,
-    completion_year_min: int | None = None,
-    completion_year_max: int | None = None,
+    min_lateral_length: float | None = None,
     uwi_column: str = "uwi",
 ) -> list[str]:
     """Filter wells by various attributes.
@@ -153,10 +288,10 @@ def filter_wells_by_attributes(
     Args:
         wells_df: DataFrame with well attributes
         uwis: Optional list of UWIs to filter from
-        min_production_months: Minimum months of production
-        formation: Target formation name
-        completion_year_min: Minimum completion year
-        completion_year_max: Maximum completion year
+        hole_direction: Well type filter (HORIZONTAL, VERTICAL, DIRECTIONAL)
+        play_type: Play type filter (SHALE, TIGHT, etc.)
+        formation: Target formation filter
+        min_lateral_length: Minimum lateral length (m)
         uwi_column: Name of UWI column
 
     Returns:
@@ -167,17 +302,16 @@ def filter_wells_by_attributes(
     if uwis is not None:
         df = df[df[uwi_column].isin(uwis)]
 
-    if min_production_months is not None and "production_months" in df.columns:
-        df = df[df["production_months"] >= min_production_months]
+    if hole_direction is not None and "hole_direction" in df.columns:
+        df = df[df["hole_direction"] == hole_direction]
 
-    if formation is not None and "formation" in df.columns:
-        df = df[df["formation"] == formation]
+    if play_type is not None and "play_type" in df.columns:
+        df = df[df["play_type"] == play_type]
 
-    if completion_year_min is not None and "completion_year" in df.columns:
-        df = df[df["completion_year"] >= completion_year_min]
+    if formation is not None and "target_formation" in df.columns:
+        df = df[df["target_formation"] == formation]
 
-    if completion_year_max is not None and "completion_year" in df.columns:
-        df = df[df["completion_year"] <= completion_year_max]
+    if min_lateral_length is not None and "lateral_length" in df.columns:
+        df = df[df["lateral_length"] >= min_lateral_length]
 
     return df[uwi_column].tolist()
-

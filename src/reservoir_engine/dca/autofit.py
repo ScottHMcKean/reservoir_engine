@@ -16,8 +16,8 @@ from reservoir_engine.dca.models import ArpsParams, ButlerParams, arps_rate, but
 def fit_arps(
     df: pd.DataFrame,
     uwi: str,
-    rate_column: str = "oil_bbl",
-    date_column: str = "date",
+    rate_column: str = "oil",
+    date_column: str = "production_date",
     method: Literal["hyperbolic", "harmonic", "exponential", "auto"] = "auto",
     min_months: int = 6,
 ) -> ArpsParams:
@@ -152,8 +152,8 @@ def fit_butler(
     production_df: pd.DataFrame,
     steam_df: pd.DataFrame | None = None,
     uwi: str = "",
-    rate_column: str = "oil_bbl",
-    date_column: str = "date",
+    rate_column: str = "oil",
+    date_column: str = "production_date",
     min_months: int = 12,
 ) -> ButlerParams:
     """Fit Butler SAGD model to thermal production data.

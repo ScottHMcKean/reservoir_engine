@@ -1,4 +1,4 @@
-"""Spatial inference and prediction for production mapping.
+"""Spatial inference and prediction using H3.
 
 Generate predictions on a spatial grid for visualization
 and decision support.
@@ -10,56 +10,58 @@ import numpy as np
 import pandas as pd
 
 
-def create_prediction_grid(
+def create_prediction_grid_h3(
     min_lon: float,
     min_lat: float,
     max_lon: float,
     max_lat: float,
-    resolution_m: float = 500,
+    resolution: int = 7,
 ) -> pd.DataFrame:
-    """Create a regular grid for spatial predictions.
+    """Create a prediction grid using H3 cells.
 
     Args:
         min_lon: Minimum longitude (west boundary)
         min_lat: Minimum latitude (south boundary)
         max_lon: Maximum longitude (east boundary)
         max_lat: Maximum latitude (north boundary)
-        resolution_m: Grid spacing in meters (approximate)
+        resolution: H3 resolution (7 = ~5km², 8 = ~0.7km², 9 = ~0.1km²)
 
     Returns:
-        DataFrame with columns: grid_id, latitude, longitude
+        DataFrame with columns: h3_index, latitude, longitude
 
     Example:
-        >>> grid = create_prediction_grid(-110, 50, -109, 51, resolution_m=1000)
-        >>> print(f"Grid points: {len(grid)}")
+        >>> grid = create_prediction_grid_h3(-117, 54, -116, 55, resolution=8)
     """
-    # Approximate conversion: 1 degree ~ 111 km at equator
-    # Adjust for latitude
-    lat_center = (min_lat + max_lat) / 2
-    lon_degree_m = 111320 * np.cos(np.radians(lat_center))
-    lat_degree_m = 110540
+    import h3
 
-    # Calculate step sizes in degrees
-    lon_step = resolution_m / lon_degree_m
-    lat_step = resolution_m / lat_degree_m
+    # Create bounding box polygon
+    geojson_polygon = {
+        "type": "Polygon",
+        "coordinates": [
+            [
+                [min_lon, min_lat],
+                [max_lon, min_lat],
+                [max_lon, max_lat],
+                [min_lon, max_lat],
+                [min_lon, min_lat],
+            ]
+        ],
+    }
 
-    # Create grid
-    lons = np.arange(min_lon, max_lon + lon_step, lon_step)
-    lats = np.arange(min_lat, max_lat + lat_step, lat_step)
+    # Get all H3 cells in the bounding box
+    cells = h3.geo_to_cells(geojson_polygon, resolution)
 
+    # Get centroids of each cell
     grid_points = []
-    grid_id = 0
-
-    for lon in lons:
-        for lat in lats:
-            grid_points.append(
-                {
-                    "grid_id": grid_id,
-                    "longitude": lon,
-                    "latitude": lat,
-                }
-            )
-            grid_id += 1
+    for cell in cells:
+        lat, lon = h3.cell_to_latlng(cell)
+        grid_points.append(
+            {
+                "h3_index": cell,
+                "latitude": lat,
+                "longitude": lon,
+            }
+        )
 
     return pd.DataFrame(grid_points)
 
@@ -69,35 +71,34 @@ def predict_on_grid(
     grid_df: pd.DataFrame,
     feature_columns: list[str],
     wells_df: pd.DataFrame | None = None,
-    spatial_interpolation: bool = True,
-    interpolation_radius_km: float = 5.0,
+    interpolation_k: int = 1,
 ) -> pd.DataFrame:
-    """Generate predictions on a spatial grid.
+    """Generate predictions on a spatial grid using H3.
 
     Args:
         model: Trained prediction model
-        grid_df: DataFrame from create_prediction_grid
-        feature_columns: List of feature column names (must match training)
+        grid_df: DataFrame from create_prediction_grid_h3
+        feature_columns: List of feature column names
         wells_df: Optional DataFrame with well features for interpolation
-        spatial_interpolation: If True, interpolate features from nearby wells
-        interpolation_radius_km: Radius for spatial interpolation
+        interpolation_k: K-ring for neighbor interpolation
 
     Returns:
         Grid DataFrame with added 'prediction' column
 
     Example:
-        >>> grid = create_prediction_grid(-110, 50, -109, 51)
+        >>> grid = create_prediction_grid_h3(-117, 54, -116, 55)
         >>> predictions = predict_on_grid(model, grid, feature_columns, wells_df)
     """
+
     result = grid_df.copy()
 
-    if spatial_interpolation and wells_df is not None:
-        # Interpolate features from nearby wells
-        result = _interpolate_features_to_grid(
-            result, wells_df, feature_columns, interpolation_radius_km
+    if wells_df is not None:
+        # Interpolate features from nearby wells using H3 neighbors
+        result = _interpolate_features_h3(
+            result, wells_df, feature_columns, interpolation_k
         )
     else:
-        # Use placeholder values (mean) for non-spatial features
+        # Initialize missing features to 0
         for col in feature_columns:
             if col not in result.columns:
                 result[col] = 0.0
@@ -109,58 +110,50 @@ def predict_on_grid(
     return result
 
 
-def _interpolate_features_to_grid(
+def _interpolate_features_h3(
     grid_df: pd.DataFrame,
     wells_df: pd.DataFrame,
     feature_columns: list[str],
-    radius_km: float,
+    k: int = 1,
 ) -> pd.DataFrame:
-    """Interpolate well features to grid points using inverse distance weighting."""
+    """Interpolate well features to grid points using H3 neighbors."""
+    import h3
+
     result = grid_df.copy()
+
+    # Ensure wells have H3 index
+    if "h3_index" not in wells_df.columns:
+        wells_with_h3 = wells_df.copy()
+        wells_with_h3["h3_index"] = wells_with_h3.apply(
+            lambda row: h3.latlng_to_cell(
+                row["surface_latitude"], row["surface_longitude"], 9
+            )
+            if pd.notna(row.get("surface_latitude"))
+            else None,
+            axis=1,
+        )
+    else:
+        wells_with_h3 = wells_df
 
     # Initialize feature columns
     for col in feature_columns:
         if col not in result.columns:
             result[col] = np.nan
 
-    # Earth radius in km
-    R = 6371
-
+    # For each grid cell, find wells in k-ring and average their features
     for idx in result.index:
-        grid_lat = np.radians(result.loc[idx, "latitude"])
-        grid_lon = np.radians(result.loc[idx, "longitude"])
+        grid_cell = result.loc[idx, "h3_index"]
 
-        # Calculate distances to all wells
-        well_lats = np.radians(wells_df["latitude"].values)
-        well_lons = np.radians(wells_df["longitude"].values)
+        # Get cells in k-ring
+        neighbor_cells = h3.grid_disk(grid_cell, k)
 
-        dlat = well_lats - grid_lat
-        dlon = well_lons - grid_lon
+        # Find wells in those cells
+        nearby_wells = wells_with_h3[wells_with_h3["h3_index"].isin(neighbor_cells)]
 
-        a = np.sin(dlat / 2) ** 2 + np.cos(grid_lat) * np.cos(well_lats) * np.sin(dlon / 2) ** 2
-        c = 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
-        distances = R * c
-
-        # Find wells within radius
-        mask = distances <= radius_km
-
-        if not np.any(mask):
-            continue
-
-        nearby_wells = wells_df.loc[mask]
-        nearby_distances = distances[mask]
-
-        # Inverse distance weighting
-        weights = 1 / (nearby_distances + 0.001)  # Add small value to avoid div by zero
-        weights = weights / weights.sum()
-
-        # Interpolate each feature
-        for col in feature_columns:
-            if col in nearby_wells.columns:
-                values = nearby_wells[col].values
-                valid_mask = ~np.isnan(values)
-                if np.any(valid_mask):
-                    result.loc[idx, col] = np.sum(weights[valid_mask] * values[valid_mask])
+        if len(nearby_wells) > 0:
+            for col in feature_columns:
+                if col in nearby_wells.columns:
+                    result.loc[idx, col] = nearby_wells[col].mean()
 
     return result
 
@@ -182,7 +175,6 @@ def export_to_geojson(
 
     Example:
         >>> geojson = export_to_geojson(predictions, "prediction")
-        >>> # Use in Leaflet or other mapping library
     """
     import json
 
@@ -196,7 +188,64 @@ def export_to_geojson(
                 "coordinates": [row["longitude"], row["latitude"]],
             },
             "properties": {
-                "grid_id": int(row.get("grid_id", 0)),
+                "h3_index": row.get("h3_index", ""),
+                value_column: float(row.get(value_column, 0)),
+            },
+        }
+        features.append(feature)
+
+    geojson = {
+        "type": "FeatureCollection",
+        "features": features,
+    }
+
+    if output_path:
+        with open(output_path, "w") as f:
+            json.dump(geojson, f)
+
+    return geojson
+
+
+def export_h3_hexagons_geojson(
+    grid_df: pd.DataFrame,
+    value_column: str = "prediction",
+    output_path: str | None = None,
+) -> dict:
+    """Export H3 hexagons as GeoJSON polygons for choropleth visualization.
+
+    Args:
+        grid_df: DataFrame with H3 indices and predictions
+        value_column: Column to include in properties
+        output_path: Optional path to save GeoJSON file
+
+    Returns:
+        GeoJSON dictionary with hexagon polygons
+    """
+    import json
+
+    import h3
+
+    features = []
+
+    for _, row in grid_df.iterrows():
+        h3_index = row.get("h3_index")
+        if h3_index is None:
+            continue
+
+        # Get hexagon boundary
+        boundary = h3.cell_to_boundary(h3_index)
+        # Convert to GeoJSON format (lon, lat) and close the ring
+        coords = [[lon, lat] for lat, lon in boundary]
+        coords.append(coords[0])  # Close the polygon
+
+        feature = {
+            "type": "Feature",
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [coords],
+            },
+            "properties": {
+                "h3_index": h3_index,
                 value_column: float(row.get(value_column, 0)),
             },
         }
@@ -230,10 +279,6 @@ def bin_predictions(
 
     Returns:
         DataFrame with added 'bin' column
-
-    Example:
-        >>> binned = bin_predictions(predictions, n_bins=5)
-        >>> # Use bin column for choropleth coloring
     """
     result = grid_df.copy()
 
@@ -248,4 +293,3 @@ def bin_predictions(
     )
 
     return result
-

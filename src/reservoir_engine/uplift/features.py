@@ -2,6 +2,8 @@
 
 Provides functions for building feature matrices from production,
 completion, and survey data.
+
+Uses IHS column naming conventions.
 """
 
 from typing import Literal
@@ -13,6 +15,7 @@ import pandas as pd
 def build_feature_matrix(
     wells_df: pd.DataFrame,
     production_df: pd.DataFrame | None = None,
+    production_summary_df: pd.DataFrame | None = None,
     completions_df: pd.DataFrame | None = None,
     surveys_df: pd.DataFrame | None = None,
     uwi_column: str = "uwi",
@@ -23,8 +26,9 @@ def build_feature_matrix(
     a single feature matrix suitable for machine learning.
 
     Args:
-        wells_df: DataFrame with well header information (must have uwi, lat, lon)
-        production_df: Optional production data
+        wells_df: DataFrame with well header information
+        production_df: Optional monthly production data
+        production_summary_df: Optional production summary data
         completions_df: Optional completion data
         surveys_df: Optional survey/trajectory data
         uwi_column: Name of UWI column
@@ -38,10 +42,19 @@ def build_feature_matrix(
     result = wells_df[[uwi_column]].copy()
     result = result.drop_duplicates(subset=[uwi_column])
 
-    # Add production features
+    # Add well header features
+    header_features = _extract_header_features(wells_df, uwi_column)
+    result = result.merge(header_features, on=uwi_column, how="left")
+
+    # Add production features (from monthly data)
     if production_df is not None:
         prod_features = _extract_production_features(production_df, uwi_column)
         result = result.merge(prod_features, on=uwi_column, how="left")
+
+    # Add production summary features (pre-calculated metrics)
+    if production_summary_df is not None:
+        summary_features = _extract_summary_features(production_summary_df, uwi_column)
+        result = result.merge(summary_features, on=uwi_column, how="left")
 
     # Add completion features
     if completions_df is not None:
@@ -53,32 +66,43 @@ def build_feature_matrix(
         survey_features = _extract_survey_features(surveys_df, uwi_column)
         result = result.merge(survey_features, on=uwi_column, how="left")
 
-    # Add well header features (if present)
-    header_cols = ["latitude", "longitude", "formation", "operator", "completion_date"]
-    available_cols = [c for c in header_cols if c in wells_df.columns]
-    if available_cols:
-        result = result.merge(
-            wells_df[[uwi_column] + available_cols].drop_duplicates(subset=[uwi_column]),
-            on=uwi_column,
-            how="left",
-        )
-
     return result
+
+
+def _extract_header_features(
+    wells_df: pd.DataFrame,
+    uwi_column: str = "uwi",
+) -> pd.DataFrame:
+    """Extract features from well header data."""
+    feature_cols = [
+        uwi_column,
+        "surface_latitude",
+        "surface_longitude",
+        "drill_td",
+        "tvd",
+        "lateral_length",
+        "hole_direction",
+        "play_type",
+    ]
+
+    # Only include columns that exist
+    available_cols = [c for c in feature_cols if c in wells_df.columns]
+    return wells_df[available_cols].drop_duplicates(subset=[uwi_column])
 
 
 def _extract_production_features(
     production_df: pd.DataFrame,
     uwi_column: str = "uwi",
 ) -> pd.DataFrame:
-    """Extract production-based features."""
+    """Extract production-based features from monthly data."""
     features = production_df.groupby(uwi_column).agg(
-        production_months=("date", "count"),
-        cum_oil=("oil_bbl", "sum"),
-        cum_gas=("gas_mcf", "sum"),
-        cum_water=("water_bbl", "sum"),
-        peak_oil=("oil_bbl", "max"),
-        avg_oil=("oil_bbl", "mean"),
-        first_month_oil=("oil_bbl", "first"),
+        production_months=("production_date", "count"),
+        cum_oil=("oil", "sum"),
+        cum_gas=("gas", "sum"),
+        cum_water=("water", "sum"),
+        peak_oil=("oil", "max"),
+        avg_oil=("oil", "mean"),
+        first_month_oil=("oil", "first"),
     ).reset_index()
 
     # Derived features
@@ -90,25 +114,41 @@ def _extract_production_features(
     return features
 
 
+def _extract_summary_features(
+    summary_df: pd.DataFrame,
+    uwi_column: str = "uwi",
+) -> pd.DataFrame:
+    """Extract features from production summary data."""
+    feature_cols = [
+        uwi_column,
+        "cum_boe",
+        "cum_production_hours",
+        "first_3_month_boe",
+        "first_3_month_oil",
+        "first_3_month_gas",
+        "max_boe",
+        "max_oil",
+        "max_gas",
+    ]
+
+    available_cols = [c for c in feature_cols if c in summary_df.columns]
+    return summary_df[available_cols].drop_duplicates(subset=[uwi_column])
+
+
 def _extract_completion_features(
     completions_df: pd.DataFrame,
     uwi_column: str = "uwi",
 ) -> pd.DataFrame:
     """Extract completion-based features."""
     features = completions_df.groupby(uwi_column).agg(
-        stage_count=("stage", "max"),
-        total_proppant=("proppant_tonnes", "sum"),
-        total_fluid=("fluid_m3", "sum"),
-        total_clusters=("cluster_count", "sum"),
-        lateral_length=("perf_btm_md", lambda x: x.max() - x.min()),
+        completion_count=("completion_obs_no", "count"),
+        total_perf_shots=("perf_shots", "sum"),
+        min_top_depth=("top_depth", "min"),
+        max_base_depth=("base_depth", "max"),
     ).reset_index()
 
     # Derived features
-    features["proppant_per_stage"] = features["total_proppant"] / (features["stage_count"] + 1)
-    features["fluid_per_stage"] = features["total_fluid"] / (features["stage_count"] + 1)
-    features["proppant_intensity"] = features["total_proppant"] / (
-        features["lateral_length"] + 1
-    )
+    features["completion_interval"] = features["max_base_depth"] - features["min_top_depth"]
 
     return features
 
@@ -119,15 +159,16 @@ def _extract_survey_features(
 ) -> pd.DataFrame:
     """Extract survey/trajectory-based features."""
     features = surveys_df.groupby(uwi_column).agg(
-        total_md=("md", "max"),
-        total_tvd=("tvd", "max"),
+        max_md=("station_md", "max"),
+        max_tvd=("station_tvd", "max"),
         max_inclination=("inclination", "max"),
         avg_inclination=("inclination", "mean"),
+        survey_points=("station_md", "count"),
     ).reset_index()
 
     # Derived features
     features["horizontal_displacement"] = np.sqrt(
-        features["total_md"] ** 2 - features["total_tvd"] ** 2
+        np.maximum(0, features["max_md"] ** 2 - features["max_tvd"] ** 2)
     )
 
     return features
@@ -135,15 +176,15 @@ def _extract_survey_features(
 
 def calculate_eur_targets(
     production_df: pd.DataFrame,
-    months: list[int] = [6, 12, 24, 36, 60],
-    rate_column: str = "oil_bbl",
+    months: list[int] | None = None,
+    rate_column: str = "oil",
     uwi_column: str = "uwi",
 ) -> pd.DataFrame:
     """Calculate EUR at various time horizons for target variables.
 
     Args:
         production_df: DataFrame with production data
-        months: List of month horizons to calculate EUR
+        months: List of month horizons to calculate EUR (default: [6, 12, 24, 36, 60])
         rate_column: Name of rate column
         uwi_column: Name of UWI column
 
@@ -152,12 +193,12 @@ def calculate_eur_targets(
 
     Example:
         >>> targets = calculate_eur_targets(df, months=[12, 24, 60])
-        >>> # Use targets["eur_12m"] as ML target
     """
-    production_df = production_df.copy()
-    production_df = production_df.sort_values([uwi_column, "date"])
+    if months is None:
+        months = [6, 12, 24, 36, 60]
 
-    # Calculate month number for each well
+    production_df = production_df.copy()
+    production_df = production_df.sort_values([uwi_column, "production_date"])
     production_df["month_num"] = production_df.groupby(uwi_column).cumcount() + 1
 
     results = []
@@ -175,51 +216,53 @@ def calculate_eur_targets(
     return pd.DataFrame(results)
 
 
-def create_spatial_features(
+def create_spatial_features_h3(
     wells_df: pd.DataFrame,
-    lat_column: str = "latitude",
-    lon_column: str = "longitude",
+    lat_column: str = "surface_latitude",
+    lon_column: str = "surface_longitude",
     uwi_column: str = "uwi",
-    n_neighbors: int = 5,
+    resolution: int = 9,
 ) -> pd.DataFrame:
-    """Create spatial features based on well locations.
+    """Create spatial features based on H3 indexing.
 
     Args:
         wells_df: DataFrame with well locations
         lat_column: Name of latitude column
         lon_column: Name of longitude column
         uwi_column: Name of UWI column
-        n_neighbors: Number of neighbors for density calculation
+        resolution: H3 resolution for neighbor calculations
 
     Returns:
         DataFrame with spatial features
 
     Example:
-        >>> spatial = create_spatial_features(wells_df)
+        >>> spatial = create_spatial_features_h3(wells_df)
     """
-    from scipy.spatial import distance
+    import h3
 
-    # Extract coordinates
-    coords = wells_df[[lon_column, lat_column]].values
+    result = wells_df[[uwi_column, lat_column, lon_column]].copy()
+    result = result.dropna(subset=[lat_column, lon_column])
 
-    # Calculate pairwise distances
-    dist_matrix = distance.cdist(coords, coords, metric="euclidean")
+    # Add H3 index
+    result["h3_index"] = result.apply(
+        lambda row: h3.latlng_to_cell(row[lat_column], row[lon_column], resolution),
+        axis=1,
+    )
 
-    # Calculate features
-    features = []
+    # Count wells per H3 cell (density)
+    cell_counts = result.groupby("h3_index").size().reset_index(name="wells_in_cell")
+    result = result.merge(cell_counts, on="h3_index", how="left")
 
-    for i, uwi in enumerate(wells_df[uwi_column]):
-        distances = np.sort(dist_matrix[i])[1:]  # Exclude self
+    # Get parent cell at coarser resolution for regional context
+    parent_resolution = max(0, resolution - 3)
+    result["h3_parent"] = result["h3_index"].apply(
+        lambda x: h3.cell_to_parent(x, parent_resolution)
+    )
 
-        row = {
-            uwi_column: uwi,
-            "nearest_well_dist": distances[0] if len(distances) > 0 else np.nan,
-            "avg_neighbor_dist": np.mean(distances[:n_neighbors]) if len(distances) >= n_neighbors else np.nan,
-            "well_density": n_neighbors / (np.sum(distances[:n_neighbors]) + 1e-6) if len(distances) >= n_neighbors else 0,
-        }
-        features.append(row)
+    parent_counts = result.groupby("h3_parent").size().reset_index(name="wells_in_region")
+    result = result.merge(parent_counts, on="h3_parent", how="left")
 
-    return pd.DataFrame(features)
+    return result[[uwi_column, "h3_index", "wells_in_cell", "h3_parent", "wells_in_region"]]
 
 
 def encode_categorical_features(
@@ -263,4 +306,3 @@ def encode_categorical_features(
             result[f"{col}_encoded"] = result[col].map(target_means)
 
     return result
-

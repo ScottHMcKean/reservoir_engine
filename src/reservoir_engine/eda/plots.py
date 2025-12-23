@@ -2,6 +2,8 @@
 
 All plot functions return figure objects that can be displayed
 in both Jupyter notebooks and Dash/Streamlit applications.
+
+Uses IHS column naming conventions.
 """
 
 from typing import Any, Literal
@@ -13,7 +15,7 @@ def plot_production_timeseries(
     df: pd.DataFrame,
     uwi: str | list[str] | None = None,
     phase: Literal["oil", "gas", "water", "all"] = "oil",
-    date_column: str = "date",
+    date_column: str = "production_date",
     use_plotly: bool = True,
 ) -> Any:
     """Plot production time series for one or more wells.
@@ -29,10 +31,8 @@ def plot_production_timeseries(
         Plotly Figure or Matplotlib Figure
 
     Example:
-        >>> fig = plot_production_timeseries(df, uwi="WELL-001", phase="oil")
-        >>> fig.show()  # In notebook
+        >>> fig = plot_production_timeseries(df, uwi="100010106021W500", phase="oil")
     """
-    # Filter by UWI if provided
     plot_df = df.copy()
     if uwi is not None:
         if isinstance(uwi, str):
@@ -40,15 +40,14 @@ def plot_production_timeseries(
         plot_df = plot_df[plot_df["uwi"].isin(uwi)]
 
     phase_columns = {
-        "oil": ["oil_bbl"],
-        "gas": ["gas_mcf"],
-        "water": ["water_bbl"],
-        "all": ["oil_bbl", "gas_mcf", "water_bbl"],
+        "oil": ["oil"],
+        "gas": ["gas"],
+        "water": ["water"],
+        "all": ["oil", "gas", "water"],
     }
     columns_to_plot = phase_columns[phase]
 
     if use_plotly:
-        import plotly.express as px
         import plotly.graph_objects as go
 
         fig = go.Figure()
@@ -64,14 +63,14 @@ def plot_production_timeseries(
                         x=well_data[date_column],
                         y=well_data[col],
                         mode="lines",
-                        name=f"{well_uwi} - {col}",
+                        name=f"{well_uwi[-10:]} - {col}",  # Truncate UWI for readability
                     )
                 )
 
         fig.update_layout(
             title="Production Time Series",
             xaxis_title="Date",
-            yaxis_title="Production",
+            yaxis_title="Production (M3 or E3M3)",
             hovermode="x unified",
         )
         return fig
@@ -86,7 +85,7 @@ def plot_production_timeseries(
 
             for well_uwi in plot_df["uwi"].unique():
                 well_data = plot_df[plot_df["uwi"] == well_uwi].sort_values(date_column)
-                ax.plot(well_data[date_column], well_data[col], label=f"{well_uwi} - {col}")
+                ax.plot(well_data[date_column], well_data[col], label=f"{well_uwi[-10:]} - {col}")
 
         ax.set_xlabel("Date")
         ax.set_ylabel("Production")
@@ -116,20 +115,19 @@ def plot_decline_curve(
     Returns:
         Plotly Figure or Matplotlib Figure
     """
-    rate_col = f"{phase}_bbl" if phase == "oil" else f"{phase}_mcf"
+    rate_col = phase
 
     well_df = df[df["uwi"] == uwi].copy()
-    well_df = well_df.sort_values("date")
+    well_df = well_df.sort_values("production_date")
 
     if use_plotly:
         import plotly.graph_objects as go
 
         fig = go.Figure()
 
-        # Historical data
         fig.add_trace(
             go.Scatter(
-                x=well_df["date"],
+                x=well_df["production_date"],
                 y=well_df[rate_col],
                 mode="markers",
                 name="Historical",
@@ -137,7 +135,6 @@ def plot_decline_curve(
             )
         )
 
-        # Forecast if provided
         if forecast_df is not None:
             fig.add_trace(
                 go.Scatter(
@@ -150,7 +147,7 @@ def plot_decline_curve(
             )
 
         fig.update_layout(
-            title=f"Decline Curve - {uwi}",
+            title=f"Decline Curve - {uwi[-15:]}",
             xaxis_title="Date",
             yaxis_title=f"{phase.title()} Rate",
             yaxis_type="log" if log_scale else "linear",
@@ -161,19 +158,14 @@ def plot_decline_curve(
 
         fig, ax = plt.subplots(figsize=(10, 6))
 
-        ax.scatter(well_df["date"], well_df[rate_col], label="Historical", s=20)
+        ax.scatter(well_df["production_date"], well_df[rate_col], label="Historical", s=20)
 
         if forecast_df is not None:
-            ax.plot(
-                forecast_df["date"],
-                forecast_df["rate"],
-                "r--",
-                label="Forecast",
-            )
+            ax.plot(forecast_df["date"], forecast_df["rate"], "r--", label="Forecast")
 
         ax.set_xlabel("Date")
         ax.set_ylabel(f"{phase.title()} Rate")
-        ax.set_title(f"Decline Curve - {uwi}")
+        ax.set_title(f"Decline Curve - {uwi[-15:]}")
         if log_scale:
             ax.set_yscale("log")
         ax.legend()
@@ -182,8 +174,8 @@ def plot_decline_curve(
 
 def plot_production_heatmap(
     df: pd.DataFrame,
-    value_column: str = "oil_bbl",
-    date_column: str = "date",
+    value_column: str = "oil",
+    date_column: str = "production_date",
     use_plotly: bool = True,
 ) -> Any:
     """Create a heatmap of production values by well and time.
@@ -197,7 +189,6 @@ def plot_production_heatmap(
     Returns:
         Plotly Figure or Matplotlib Figure
     """
-    # Pivot data for heatmap
     pivot_df = df.pivot_table(
         values=value_column,
         index="uwi",
@@ -245,11 +236,17 @@ def plot_rate_cumulative(
     Returns:
         Plotly Figure or Matplotlib Figure
     """
-    rate_col = f"{phase}_bbl" if phase == "oil" else f"{phase}_mcf"
+    rate_col = phase
+    cum_col = f"cum_{phase}"
 
     well_df = df[df["uwi"] == uwi].copy()
-    well_df = well_df.sort_values("date")
-    well_df["cumulative"] = well_df[rate_col].cumsum()
+    well_df = well_df.sort_values("production_date")
+
+    # Calculate cumulative if not present
+    if cum_col not in well_df.columns:
+        well_df["cumulative"] = well_df[rate_col].cumsum()
+    else:
+        well_df["cumulative"] = well_df[cum_col]
 
     if use_plotly:
         import plotly.express as px
@@ -258,7 +255,7 @@ def plot_rate_cumulative(
             well_df,
             x="cumulative",
             y=rate_col,
-            title=f"Rate vs Cumulative - {uwi}",
+            title=f"Rate vs Cumulative - {uwi[-15:]}",
             labels={"cumulative": f"Cumulative {phase.title()}", rate_col: "Rate"},
         )
         fig.update_yaxes(type="log")
@@ -270,7 +267,6 @@ def plot_rate_cumulative(
         ax.scatter(well_df["cumulative"], well_df[rate_col], s=20)
         ax.set_xlabel(f"Cumulative {phase.title()}")
         ax.set_ylabel("Rate")
-        ax.set_title(f"Rate vs Cumulative - {uwi}")
+        ax.set_title(f"Rate vs Cumulative - {uwi[-15:]}")
         ax.set_yscale("log")
         return fig
-

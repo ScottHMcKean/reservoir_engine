@@ -29,7 +29,7 @@ class TestArpsForecast:
         assert forecast["cumulative"].is_monotonic_increasing
 
     def test_economic_limit(self, arps_params):
-        forecast = arps_forecast(arps_params, months=600, economic_limit=50)
+        forecast = arps_forecast(arps_params, months=600, economic_limit=5.0)
         # Should stop before 600 months due to economic limit
         assert len(forecast) < 600
 
@@ -50,16 +50,16 @@ class TestCalculateEur:
     """Tests for calculate_eur function."""
 
     def test_eur_positive(self, arps_params):
-        eur = calculate_eur(arps_params, economic_limit=10)
+        eur = calculate_eur(arps_params, economic_limit=1.0)
         assert eur > 0
 
     def test_higher_limit_lower_eur(self, arps_params):
-        eur_low = calculate_eur(arps_params, economic_limit=10)
-        eur_high = calculate_eur(arps_params, economic_limit=50)
+        eur_low = calculate_eur(arps_params, economic_limit=1.0)
+        eur_high = calculate_eur(arps_params, economic_limit=10.0)
         assert eur_high < eur_low
 
     def test_eur_butler(self, butler_params):
-        eur = calculate_eur(butler_params, economic_limit=10)
+        eur = calculate_eur(butler_params, economic_limit=1.0)
         assert eur > 0
 
 
@@ -78,4 +78,3 @@ class TestCombineForecasts:
     def test_combine_empty(self):
         result = combine_forecasts([])
         assert len(result) == 0
-
