@@ -122,6 +122,89 @@ params = fit_butler(production, steam_df, uwi="PAD-01")
 forecast = butler_forecast(params, months=240, include_sor=True)
 ```
 
+**Gas-First DCA with CGR-Based Condensate:**
+```python
+from reservoir_engine.dca import (
+    DCAConfig, CGRConfig,
+    prepare_time_series, fit_gas, fit_cgr,
+    forecast_all, fit_and_forecast
+)
+
+# Option 1: Step-by-step
+config = DCAConfig(
+    num_segments=1,
+    terminal_decline_year=0.06,  # 6% annual terminal decline
+)
+ts = prepare_time_series(production_df, gas_col="gas", cond_col="condensate")
+gas_params = fit_gas(ts, config)
+cgr_params = fit_cgr(ts, gas_params)
+forecast = forecast_all(np.arange(360), gas_params, cgr_params)
+
+# Option 2: One-liner
+gas_params, cgr_params, forecast = fit_and_forecast(
+    production_df,
+    forecast_months=360,
+    gas_col="gas",
+    cond_col="condensate",
+)
+```
+
+**Gas-First DCA Features:**
+- Fixed 30.4-day normalized months (calendar-agnostic fitting)
+- Multi-segment Arps with shared terminal exponential decline
+- CGR model: condensate derived from gas via log-linear CGR(qg)
+- Shared segment boundaries across phases
+- Log-rate least squares objective for robust fitting
+
+**Butler SAGD DCA (Thermal):**
+```python
+from reservoir_engine.dca import (
+    SAGDConfig,
+    prepare_sagd_series, fit_sagd_butler,
+    forecast_sagd, calculate_sagd_sor,
+    fit_and_forecast_sagd
+)
+
+# Two-stage Butler: rising (sqrt(t)) -> spreading (1/sqrt(t))
+config = SAGDConfig(
+    model="butler_2stage",
+    use_terminal_decline=True,
+    terminal_decline_year=0.06,
+)
+ts = prepare_sagd_series(production_df, oil_col="oil", steam_col="steam_volume")
+params = fit_sagd_butler(ts, config)
+forecast = forecast_sagd(np.arange(240), params)
+sor_metrics = calculate_sagd_sor(ts, params)
+
+# Multi-segment Butler for complex SAGD behavior
+config_multiseg = SAGDConfig(
+    model="butler_multiseg",
+    num_segments=3,
+    segment_boundaries=[0, 12, 36],
+)
+```
+
+**SAGD Butler Features:**
+- Two-stage model: rising phase (q ∝ t^α) and spreading phase (q ∝ t^(-α))
+- Multi-segment power-law for complex pad behavior
+- Continuity enforced at segment boundaries
+- Shared terminal exponential decline
+- SOR (Steam-Oil Ratio) calculation
+
+### Architecture Mirror
+
+Both engines share the same structure:
+
+| Aspect     | Gas-First Arps              | SAGD Butler                  |
+|------------|-----------------------------|------------------------------|
+| Time axis  | Normalized months           | Normalized months            |
+| Segments   | Multi-segment Arps          | Multi-segment power-law      |
+| Boundaries | Shared across phases        | Shared across segments       |
+| Terminal   | Exponential D<sub>f</sub>   | Exponential D<sub>f</sub>    |
+| Fitting    | Log-rate least squares      | Log-rate least squares       |
+| Calendar   | I/O layer only              | I/O layer only               |
+
+
 ### Type Curves (`reservoir_engine.type_curves`)
 
 Probabilistic type curve generation using H3 spatial indexing.

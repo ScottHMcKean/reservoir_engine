@@ -110,16 +110,26 @@ def arps_rate(t: float | np.ndarray, params: ArpsParams) -> float | np.ndarray:
         # Exponential decline
         return qi * np.exp(-di * t)
 
-    # Hyperbolic before switch, exponential after
-    rate = np.where(
-        t <= t_switch,
-        # Hyperbolic: q(t) = qi / (1 + b * di * t)^(1/b)
-        qi / np.power(1 + b * di * t, 1 / b),
-        # Exponential after switch
-        qi / np.power(1 + b * di * t_switch, 1 / b) * np.exp(-d_min * (t - t_switch)),
-    )
+    # Compute rate at switch point for exponential tail
+    # Guard against numerical issues with very small or negative base values
+    base_at_switch = max(1 + b * di * t_switch, 1e-10)
+    q_at_switch = qi / (base_at_switch ** (1 / b))
 
-    return float(rate) if rate.ndim == 0 else rate
+    # Compute rates element-wise to avoid np.where evaluating both branches
+    scalar_input = np.ndim(t) == 0
+    t_arr = np.atleast_1d(t)
+    rate = np.empty(t_arr.shape, dtype=float)
+
+    for i, ti in enumerate(t_arr.flat):
+        if ti <= t_switch:
+            # Hyperbolic: q(t) = qi / (1 + b * di * t)^(1/b)
+            base = max(1 + b * di * ti, 1e-10)
+            rate.flat[i] = qi / (base ** (1 / b))
+        else:
+            # Exponential after switch
+            rate.flat[i] = q_at_switch * np.exp(-d_min * (ti - t_switch))
+
+    return float(rate[0]) if scalar_input else rate
 
 
 def arps_cumulative(t: float | np.ndarray, params: ArpsParams) -> float | np.ndarray:

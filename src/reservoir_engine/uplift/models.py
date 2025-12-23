@@ -93,8 +93,8 @@ def _create_model(model_type: str, **kwargs: Any) -> Any:
     if model_type == "xgboost":
         try:
             from xgboost import XGBRegressor
-        except ImportError:
-            raise ImportError("xgboost required. Install with: uv add xgboost")
+        except ImportError as e:
+            raise ImportError("xgboost required. Install with: uv add xgboost") from e
 
         default_params = {
             "n_estimators": 100,

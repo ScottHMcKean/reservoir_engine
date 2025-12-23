@@ -63,7 +63,7 @@ def fit_arps(
     rates_fit = rates[mask]
 
     if len(rates_fit) < min_months:
-        raise ValueError(f"Insufficient non-zero data for fitting")
+        raise ValueError("Insufficient non-zero data for fitting")
 
     def objective(params_array: np.ndarray, b_fixed: float | None = None) -> float:
         """Objective function for optimization."""
@@ -116,7 +116,7 @@ def fit_arps(
         # Try all three and pick best
         results = []
 
-        for m, b_val in [("exponential", 0.0), ("harmonic", 1.0)]:
+        for _method_name, b_val in [("exponential", 0.0), ("harmonic", 1.0)]:
             try:
                 result = optimize.minimize(
                     lambda x, b=b_val: objective(x, b_fixed=b),
