@@ -126,25 +126,39 @@ def render_arps_analysis():
         with col1:
             st.metric("qi (Initial Rate)", f"{params.qi:.1f}")
         with col2:
-            st.metric("Di (Decline Rate)", f"{params.di:.4f}")
+            st.metric("Di (Decline/month)", f"{params.di:.4f}")
         with col3:
             st.metric("b (Exponent)", f"{params.b:.2f}")
         with col4:
             eur = calculate_eur(params, economic_limit)
             st.metric("EUR", f"{eur:,.0f}")
 
-        # Generate forecast
-        forecast = arps_forecast(params, months=forecast_months, economic_limit=economic_limit)
+        # Generate forecast (using normalized months)
+        forecast = arps_forecast(
+            params,
+            months=forecast_months,
+            economic_limit=economic_limit,
+            include_calendar_dates=False,
+        )
 
-        # Plot
+        # Prepare historical data with normalized months
+        well_data = production[production["uwi"] == selected_uwi].sort_values("production_date")
+        well_data = well_data.copy()
+        well_data["t_norm"] = range(len(well_data))
+
+        # Normalize historical rates (rate per 30.4-day month)
+        well_data["production_date"] = pd.to_datetime(well_data["production_date"])
+        days_in_month = well_data["production_date"].dt.days_in_month
+        well_data["rate_norm"] = (well_data[phase] / days_in_month) * 30.4
+
+        # Plot against normalized months
         fig = go.Figure()
 
-        # Historical data
-        well_data = production[production["uwi"] == selected_uwi].sort_values("production_date")
+        # Historical data (normalized)
         fig.add_trace(
             go.Scatter(
-                x=well_data["production_date"],
-                y=well_data[phase],
+                x=well_data["t_norm"],
+                y=well_data["rate_norm"],
                 mode="markers",
                 name="Historical",
                 marker=dict(color="#1B1B1B", size=6),
@@ -154,7 +168,7 @@ def render_arps_analysis():
         # Forecast
         fig.add_trace(
             go.Scatter(
-                x=forecast["date"],
+                x=forecast["t_norm"],
                 y=forecast["rate"],
                 mode="lines",
                 name="Forecast",
@@ -171,14 +185,16 @@ def render_arps_analysis():
         )
 
         fig.update_layout(
-            title=f"Decline Curve - {selected_uwi[-15:]}",
-            xaxis_title="Date",
-            yaxis_title=f"{phase.title()} Rate",
+            title=f"Decline Curve - {selected_uwi[-15:]} (Normalized Time)",
+            xaxis_title="Normalized Month (30.4 days)",
+            yaxis_title=f"{phase.title()} Rate (per normalized month)",
             yaxis_type="log",
             hovermode="x unified",
         )
 
         st.plotly_chart(fig, use_container_width=True)
+
+        st.caption("All fitting and forecasting uses fixed 30.4-day normalized months for calendar-agnostic decline parameters.")
 
         # Forecast table
         with st.expander("View Forecast Data"):
@@ -239,18 +255,33 @@ def render_butler_analysis():
     # Forecast
     forecast_months = st.number_input("Forecast Months", 60, 480, 240, 12, key="butler_months")
 
-    forecast = butler_forecast(params, months=forecast_months, include_sor=True)
+    forecast = butler_forecast(
+        params,
+        months=forecast_months,
+        include_sor=True,
+        include_calendar_dates=False,
+    )
 
-    # Plot
+    # Prepare historical data with normalized months
+    well_data = production[production["uwi"] == selected_uwi].sort_values("production_date")
+    well_data = well_data.copy()
+    well_data["t_norm"] = range(len(well_data))
+
+    # Normalize historical rates
+    if "oil" in well_data.columns:
+        well_data["production_date"] = pd.to_datetime(well_data["production_date"])
+        days_in_month = well_data["production_date"].dt.days_in_month
+        well_data["rate_norm"] = (well_data["oil"] / days_in_month) * 30.4
+
+    # Plot against normalized months
     fig = go.Figure()
 
     # Historical
-    well_data = production[production["uwi"] == selected_uwi].sort_values("production_date")
-    if "oil" in well_data.columns:
+    if "rate_norm" in well_data.columns:
         fig.add_trace(
             go.Scatter(
-                x=well_data["production_date"],
-                y=well_data["oil"],
+                x=well_data["t_norm"],
+                y=well_data["rate_norm"],
                 mode="markers",
                 name="Historical",
                 marker=dict(color="#1B1B1B", size=6),
@@ -260,7 +291,7 @@ def render_butler_analysis():
     # Forecast
     fig.add_trace(
         go.Scatter(
-            x=forecast["date"],
+            x=forecast["t_norm"],
             y=forecast["rate"],
             mode="lines",
             name="Butler Forecast",
@@ -269,13 +300,15 @@ def render_butler_analysis():
     )
 
     fig.update_layout(
-        title=f"Butler SAGD Model - {selected_uwi[-15:]}",
-        xaxis_title="Date",
-        yaxis_title="Oil Rate (M3/month)",
+        title=f"Butler SAGD Model - {selected_uwi[-15:]} (Normalized Time)",
+        xaxis_title="Normalized Month (30.4 days)",
+        yaxis_title="Oil Rate (per normalized month)",
         hovermode="x unified",
     )
 
     st.plotly_chart(fig, use_container_width=True)
+
+    st.caption("All fitting and forecasting uses fixed 30.4-day normalized months.")
 
     # Steam requirements
     if "steam_required" in forecast.columns:
@@ -283,7 +316,7 @@ def render_butler_analysis():
         fig2 = go.Figure()
         fig2.add_trace(
             go.Scatter(
-                x=forecast["date"],
+                x=forecast["t_norm"],
                 y=forecast["steam_required"],
                 mode="lines",
                 fill="tozeroy",
@@ -293,8 +326,8 @@ def render_butler_analysis():
         )
         fig2.update_layout(
             title="Projected Steam Requirements",
-            xaxis_title="Date",
-            yaxis_title="Steam (M3)",
+            xaxis_title="Normalized Month (30.4 days)",
+            yaxis_title="Steam (per normalized month)",
         )
         st.plotly_chart(fig2, use_container_width=True)
 

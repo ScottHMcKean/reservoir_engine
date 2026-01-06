@@ -2,6 +2,9 @@
 
 Uses scipy.optimize for robust fitting of Arps and Butler models
 to historical production data.
+
+All fitting is done on normalized fixed-length months (30.4 days)
+to ensure calendar-agnostic decline parameters.
 """
 
 from typing import Literal
@@ -12,6 +15,30 @@ from scipy import optimize
 
 from reservoir_engine.dca.models import ArpsParams, ButlerParams, arps_rate, butler_rate
 
+# Fixed month length for rate normalization
+NORMALIZED_MONTH_DAYS = 30.4
+
+
+def _normalize_rates(
+    df: pd.DataFrame,
+    rate_column: str,
+    date_column: str,
+) -> np.ndarray:
+    """Normalize production volumes to rate per fixed 30.4-day month.
+
+    Converts monthly volumes (which vary by days-in-month) to consistent
+    rates per normalized month for calendar-agnostic fitting.
+    """
+    df = df.copy()
+    df[date_column] = pd.to_datetime(df[date_column])
+    days_in_month = df[date_column].dt.days_in_month.values
+
+    # Rate per day * normalized month length
+    volumes = df[rate_column].values
+    normalized_rates = (volumes / days_in_month) * NORMALIZED_MONTH_DAYS
+
+    return normalized_rates
+
 
 def fit_arps(
     df: pd.DataFrame,
@@ -21,12 +48,15 @@ def fit_arps(
     method: Literal["hyperbolic", "harmonic", "exponential", "auto"] = "auto",
     min_months: int = 6,
 ) -> ArpsParams:
-    """Fit Arps decline curve to production data.
+    """Fit Arps decline curve to production data using normalized months.
+
+    All fitting is performed on fixed 30.4-day normalized months for
+    calendar-agnostic decline parameters.
 
     Args:
         df: DataFrame with production data
         uwi: Well identifier to fit
-        rate_column: Column containing production rates
+        rate_column: Column containing production volumes (normalized internally)
         date_column: Column containing dates
         method: Decline type to fit:
             - "hyperbolic": Fit hyperbolic (0 < b < 1)
@@ -36,7 +66,7 @@ def fit_arps(
         min_months: Minimum months of data required
 
     Returns:
-        ArpsParams with fitted qi, di, b values
+        ArpsParams with fitted qi, di, b values (per normalized month)
 
     Raises:
         ValueError: If insufficient data for fitting
@@ -52,12 +82,13 @@ def fit_arps(
     if len(well_df) < min_months:
         raise ValueError(f"Insufficient data: {len(well_df)} months, need {min_months}")
 
-    # Calculate time in months from first production
-    well_df["t"] = np.arange(len(well_df))
-    rates = well_df[rate_column].values
-    t = well_df["t"].values
+    # Normalize time: integer month indices (0, 1, 2, ...)
+    t = np.arange(len(well_df))
 
-    # Filter out zeros and very low values
+    # Normalize rates: convert volumes to rate per 30.4-day month
+    rates = _normalize_rates(well_df, rate_column, date_column)
+
+    # Filter out zeros and very low values for fitting
     mask = rates > 0.1 * np.max(rates)
     t_fit = t[mask]
     rates_fit = rates[mask]
@@ -156,18 +187,21 @@ def fit_butler(
     date_column: str = "production_date",
     min_months: int = 12,
 ) -> ButlerParams:
-    """Fit Butler SAGD model to thermal production data.
+    """Fit Butler SAGD model to thermal production data using normalized months.
+
+    All fitting is performed on fixed 30.4-day normalized months for
+    calendar-agnostic decline parameters.
 
     Args:
         production_df: DataFrame with production data
         steam_df: Optional DataFrame with steam injection data
         uwi: Well identifier to fit
-        rate_column: Column containing production rates
+        rate_column: Column containing production volumes (normalized internally)
         date_column: Column containing dates
         min_months: Minimum months of data required
 
     Returns:
-        ButlerParams with fitted parameters
+        ButlerParams with fitted parameters (per normalized month)
 
     Raises:
         ValueError: If insufficient data for fitting
@@ -182,10 +216,11 @@ def fit_butler(
     if len(well_df) < min_months:
         raise ValueError(f"Insufficient data: {len(well_df)} months, need {min_months}")
 
-    # Calculate time in months from first production
-    well_df["t"] = np.arange(len(well_df))
-    rates = well_df[rate_column].values
-    t = well_df["t"].values
+    # Normalize time: integer month indices (0, 1, 2, ...)
+    t = np.arange(len(well_df))
+
+    # Normalize rates: convert volumes to rate per 30.4-day month
+    rates = _normalize_rates(well_df, rate_column, date_column)
 
     # Initial estimates
     q_peak_init = float(np.max(rates))

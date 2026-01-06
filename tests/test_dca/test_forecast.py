@@ -19,10 +19,10 @@ class TestArpsForecast:
 
     def test_forecast_columns(self, arps_params):
         forecast = arps_forecast(arps_params, months=60)
-        assert "date" in forecast.columns
-        assert "month" in forecast.columns
+        assert "t_norm" in forecast.columns
         assert "rate" in forecast.columns
         assert "cumulative" in forecast.columns
+        assert "calendar_date" in forecast.columns  # Included by default
 
     def test_cumulative_increases(self, arps_params):
         forecast = arps_forecast(arps_params, months=60)

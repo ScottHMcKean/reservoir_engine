@@ -414,18 +414,6 @@ See [docs/MODULARITY_REVIEW.md](docs/MODULARITY_REVIEW.md) for detailed analysis
 - Easy to swap data providers
 - Fast test suite (2.4s)
 
-## Comparison with Commercial Tools
-
-| Feature | Reservoir Engine | ComboCurve | Enersight | EVA Turing |
-|---------|-----------------|------------|-----------|------------|
-| Open Source | Yes | No | No | No |
-| Databricks Native | Yes | No | No | No |
-| H3 Spatial | Yes | No | No | No |
-| Arps DCA | Yes | Yes | Yes | Yes |
-| Butler (Thermal) | Yes | No | Yes | No |
-| ML Type Curves | Yes | Yes | No | Yes |
-| Modular/Composable | Yes | No | No | No |
-
 ## License
 
 See LICENSE file.

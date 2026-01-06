@@ -2,6 +2,10 @@
 
 Generate forecasts and calculate EUR (Estimated Ultimate Recovery)
 using fitted decline curve parameters.
+
+All forecasts use normalized months (fixed 30.4-day periods).
+Calendar dates are optional for visualization but the primary
+time axis is always normalized months.
 """
 
 from datetime import date, timedelta
@@ -24,41 +28,46 @@ def arps_forecast(
     months: int = 360,
     start_date: date | None = None,
     economic_limit: float = 0.0,
+    include_calendar_dates: bool = True,
 ) -> pd.DataFrame:
-    """Generate production forecast using Arps decline.
+    """Generate production forecast using Arps decline on normalized months.
+
+    All rates and times are in normalized months (fixed 30.4-day periods).
+    Calendar dates are optional and provided for visualization convenience.
 
     Args:
-        params: ArpsParams with qi, di, b values
-        months: Forecast horizon in months (default 360 = 30 years)
-        start_date: Optional start date for forecast (default: today)
+        params: ArpsParams with qi, di, b values (per normalized month)
+        months: Forecast horizon in normalized months (default 360)
+        start_date: Optional start date for calendar mapping
         economic_limit: Minimum economic rate (forecast stops when reached)
+        include_calendar_dates: Whether to include calendar dates column
 
     Returns:
-        DataFrame with columns: date, month, rate, cumulative
+        DataFrame with columns: t_norm, rate, cumulative, [calendar_date]
 
     Example:
         >>> params = ArpsParams(qi=1000, di=0.15, b=0.8)
         >>> forecast = arps_forecast(params, months=120)
         >>> print(forecast.tail())
     """
-    if start_date is None:
-        start_date = date.today()
-
     t = np.arange(months + 1)
     rates = arps_rate(t, params)
     cumulative = arps_cumulative(t, params)
 
-    # Generate dates
-    dates = [start_date + timedelta(days=30 * i) for i in range(months + 1)]
-
     df = pd.DataFrame(
         {
-            "date": dates,
-            "month": t,
+            "t_norm": t,
             "rate": rates,
             "cumulative": cumulative,
         }
     )
+
+    # Optionally add calendar dates for visualization
+    if include_calendar_dates:
+        if start_date is None:
+            start_date = date.today()
+        dates = [start_date + timedelta(days=30 * i) for i in range(months + 1)]
+        df["calendar_date"] = dates
 
     # Apply economic limit
     if economic_limit > 0:
@@ -73,36 +82,35 @@ def butler_forecast(
     start_date: date | None = None,
     economic_limit: float = 0.0,
     include_sor: bool = True,
+    include_calendar_dates: bool = True,
 ) -> pd.DataFrame:
-    """Generate production forecast using Butler SAGD model.
+    """Generate production forecast using Butler SAGD model on normalized months.
+
+    All rates and times are in normalized months (fixed 30.4-day periods).
+    Calendar dates are optional and provided for visualization convenience.
 
     Args:
-        params: ButlerParams with q_peak, m, tau values
-        months: Forecast horizon in months (default 240 = 20 years)
-        start_date: Optional start date for forecast
+        params: ButlerParams with q_peak, m, tau values (per normalized month)
+        months: Forecast horizon in normalized months (default 240)
+        start_date: Optional start date for calendar mapping
         economic_limit: Minimum economic rate
         include_sor: If True, include steam requirement column
+        include_calendar_dates: Whether to include calendar dates column
 
     Returns:
-        DataFrame with columns: date, month, rate, cumulative, [steam_required]
+        DataFrame with columns: t_norm, rate, cumulative, [steam_required], [calendar_date]
 
     Example:
         >>> params = ButlerParams(q_peak=500, m=0.1, tau=12)
         >>> forecast = butler_forecast(params, months=120)
     """
-    if start_date is None:
-        start_date = date.today()
-
     t = np.arange(months + 1)
     rates = butler_rate(t, params)
     cumulative = butler_cumulative(t, params)
 
-    dates = [start_date + timedelta(days=30 * i) for i in range(months + 1)]
-
     df = pd.DataFrame(
         {
-            "date": dates,
-            "month": t,
+            "t_norm": t,
             "rate": rates,
             "cumulative": cumulative,
         }
@@ -111,6 +119,13 @@ def butler_forecast(
     if include_sor:
         # Calculate steam required based on SOR
         df["steam_required"] = df["rate"] * params.sor
+
+    # Optionally add calendar dates for visualization
+    if include_calendar_dates:
+        if start_date is None:
+            start_date = date.today()
+        dates = [start_date + timedelta(days=30 * i) for i in range(months + 1)]
+        df["calendar_date"] = dates
 
     # Apply economic limit
     if economic_limit > 0:
@@ -180,7 +195,7 @@ def combine_forecasts(
         agg_method: Aggregation method - "sum" or "mean"
 
     Returns:
-        DataFrame with aggregated forecast
+        DataFrame with aggregated forecast by normalized month
 
     Example:
         >>> forecasts = [("WELL-001", fc1), ("WELL-002", fc2)]
@@ -198,23 +213,17 @@ def combine_forecasts(
 
     combined = pd.concat(dfs, ignore_index=True)
 
-    # Aggregate by month
-    if agg_method == "sum":
-        result = combined.groupby("month").agg(
-            {
-                "rate": "sum",
-                "cumulative": "sum",
-                "date": "first",
-            }
-        ).reset_index()
-    else:
-        result = combined.groupby("month").agg(
-            {
-                "rate": "mean",
-                "cumulative": "mean",
-                "date": "first",
-            }
-        ).reset_index()
+    # Aggregate by normalized month
+    agg_dict = {
+        "rate": agg_method,
+        "cumulative": agg_method,
+    }
+
+    # Include calendar date if available
+    if "calendar_date" in combined.columns:
+        agg_dict["calendar_date"] = "first"
+
+    result = combined.groupby("t_norm").agg(agg_dict).reset_index()
 
     return result
 
